@@ -1,7 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { Entry, Palette, Tag, entryDate, showDateTime } from "./budget";
+import { Entry, Palette, RecurringFrequency, Tag } from "./budget";
+import { type } from "./theme";
+import { Hairline } from "./ui";
 
 // Styles are built once per palette, not once per row
 const cache = new WeakMap<Palette, ReturnType<typeof makeStyles>>();
@@ -14,62 +16,85 @@ const getStyles = (C: Palette) => {
   return s;
 };
 
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const timeCache = new Map<string, string>();
+const showTime = (time: string) => {
+  let v = timeCache.get(time);
+  if (!v) {
+    v = timeFmt.format(new Date(2000, 0, 1, +time.slice(0, 2), +time.slice(3, 5)));
+    timeCache.set(time, v);
+  }
+  return v;
+};
+
 type Props = {
   item: Entry;
   tag?: Tag;
   C: Palette;
   money: (n: number) => string;
-  onPress?: (e: Entry) => void;
-  onDelete?: (e: Entry) => void;
+  spoken: (n: number) => string;
+  recurrence?: RecurringFrequency;
+  onMenu?: (e: Entry) => void;
 };
 
-function EntryRow({ item, tag, C, money, onPress, onDelete }: Props) {
+const TILE = 32;
+
+function EntryRow({ item, tag, C, money, spoken, recurrence, onMenu }: Props) {
   const s = getStyles(C);
   const isIncome = item.type === "income";
-  const tint = isIncome ? C.income : C.expense;
   const hasTitle = item.title.trim().length > 0;
   const label = hasTitle ? item.title.trim() : tag?.name ?? (isIncome ? "Income" : "Expense");
-  // The tag name is already the label when there's no description
-  const tagPrefix = tag && hasTitle ? `${tag.name} · ` : "";
-  const when = showDateTime(entryDate(item), item.time);
+  // Category and time. (The day comes from the day header.)
+  const sub = [
+    tag && hasTitle ? tag.name : null,
+    item.time ? showTime(item.time) : null,
+    recurrence ? `Repeats ${recurrence}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const sign = isIncome ? "+" : "−";
 
   return (
-    <Pressable
-      disabled={!onPress}
-      onPress={onPress ? () => onPress(item) : undefined}
-      style={({ pressed }) => [s.row, pressed && { opacity: 0.7 }]}
-      accessibilityRole={onPress ? "button" : undefined}
-      accessibilityLabel={`${isIncome ? "Income" : "Expense"} ${label}, ${money(item.amount)}`}
-    >
-      <View style={[s.badge, { backgroundColor: isIncome ? C.incomeSoft : C.expenseSoft }]}>
-        <Ionicons name={isIncome ? "arrow-down" : "arrow-up"} size={20} color={tint} />
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={s.title} numberOfLines={1}>
-          {label}
-        </Text>
-        <View style={s.meta}>
-          {tag && <View style={[s.dot, { backgroundColor: tag.color }]} />}
-          <Text style={s.date} numberOfLines={1}>
-            {tagPrefix}
-            {when}
+    <View>
+      <View style={s.row}>
+        <View
+          style={s.content}
+          accessible
+          accessibilityLabel={`${isIncome ? "Income" : "Expense"}, ${label}, ${
+            isIncome ? "plus" : "minus"
+          } ${spoken(item.amount)}${sub ? `, ${sub}` : ""}`}
+        >
+          <View style={s.tile}>
+            <Ionicons
+              name={isIncome ? "arrow-down-outline" : "arrow-up-outline"}
+              size={16}
+              color={C.textSecondary}
+            />
+          </View>
+          <View style={s.text}>
+            <Text style={s.title} numberOfLines={2}>
+              {label}
+            </Text>
+            {!!sub && <Text style={s.meta}>{sub}</Text>}
+          </View>
+          <Text style={s.amount} numberOfLines={1}>
+            {sign}
+            {money(item.amount)}
           </Text>
         </View>
+        {onMenu && (
+          <Pressable
+            onPress={() => onMenu(item)}
+            style={s.menuButton}
+            accessibilityRole="button"
+            accessibilityLabel={`Actions for ${label}`}
+          >
+            <Ionicons name="ellipsis-vertical" size={20} color={C.textSecondary} />
+          </Pressable>
+        )}
       </View>
-      <Text style={[s.amount, { color: tint }]}>
-        {isIncome ? "+" : "-"}
-        {money(item.amount)}
-      </Text>
-      {onDelete && (
-        <Pressable
-          onPress={() => onDelete(item)}
-          hitSlop={12}
-          accessibilityLabel={`Delete ${label}`}
-        >
-          <Ionicons name="trash-outline" size={20} color={C.muted} />
-        </Pressable>
-      )}
-    </Pressable>
+      <Hairline inset={TILE + 12} />
+    </View>
   );
 }
 
@@ -77,27 +102,33 @@ export default memo(EntryRow);
 
 const makeStyles = (C: Palette) =>
   StyleSheet.create({
-    row: {
+    row: { flexDirection: "row", alignItems: "center", minHeight: 60 },
+    content: {
+      flex: 1,
       flexDirection: "row",
       alignItems: "center",
-      backgroundColor: C.card,
-      borderRadius: 16,
-      padding: 14,
-      marginBottom: 10,
       gap: 12,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: C.line,
+      minHeight: 60,
+      paddingVertical: 12,
     },
-    badge: {
-      width: 42,
-      height: 42,
-      borderRadius: 21,
+    menuButton: {
+      width: 40,
+      height: 44,
       alignItems: "center",
       justifyContent: "center",
     },
-    title: { fontSize: 17, fontWeight: "600", color: C.ink },
-    meta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 },
-    dot: { width: 8, height: 8, borderRadius: 4 },
-    date: { fontSize: 13, color: C.muted, flexShrink: 1 },
-    amount: { fontSize: 17, fontWeight: "700", fontVariant: ["tabular-nums"] },
+    tile: {
+      width: TILE,
+      height: TILE,
+      borderRadius: 8,
+      backgroundColor: C.surfaceElevated,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: C.hairline,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    text: { flex: 1 },
+    title: { ...type.rowTitle, color: C.textPrimary },
+    meta: { ...type.meta, color: C.textSecondary, marginTop: 2 },
+    amount: { ...type.amount, color: C.textPrimary },
   });

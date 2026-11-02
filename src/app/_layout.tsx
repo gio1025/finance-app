@@ -1,26 +1,43 @@
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
+import { ReactNode, useEffect, useRef } from "react";
+import { View } from "react-native";
 import LockScreen from "../lib/LockScreen";
 import UndoBar from "../lib/UndoBar";
-import { BudgetProvider, useBudget } from "../lib/budget";
+import { AuthProvider, useAuth } from "../lib/auth/AuthContext";
+import { BudgetProvider, setDataScope, useBudget } from "../lib/budget";
 import { LockProvider, useLock } from "../lib/lock";
 
-// Keep the splash screen up until saved settings are loaded
+// Keep the splash screen up until everything needed for the first screen is ready
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
-function ThemedStack() {
+// Each account gets its own entries, categories and currency
+function ScopedBudget({ children }: { children: ReactNode }) {
+  const { user, status } = useAuth();
+  if (status === "loading") return null; // splash stays up while the session is restored
+  const scope = user?.id ?? "guest";
+  setDataScope(scope); // must run before BudgetProvider loads its data
+  return <BudgetProvider key={scope} userId={user?.id}>{children}</BudgetProvider>;
+}
+
+function Root() {
   const { isDark, colors, loaded } = useBudget();
   const { ready } = useLock();
+  const { status } = useAuth();
+  const signedIn = status === "signedIn";
   const all = loaded && ready;
+  const shown = useRef(false);
 
   useEffect(() => {
-    if (all) SplashScreen.hideAsync().catch(() => {});
+    if (all) {
+      shown.current = true;
+      SplashScreen.hideAsync().catch(() => {});
+    }
   }, [all]);
 
-  // Wait for saved settings and the lock state so nothing flashes
-  if (!all) return null;
+  // First launch: splash covers this. Later (log in / out): a plain background, no white flash.
+  if (!all) return shown.current ? <View style={{ flex: 1, backgroundColor: colors.bg }} /> : null;
 
   return (
     <>
@@ -28,9 +45,21 @@ function ThemedStack() {
       <Stack
         screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}
       >
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="categories" options={{ presentation: "modal" }} />
-        <Stack.Screen name="pin" options={{ presentation: "modal" }} />
+        {/* PROTECTED: only reachable while logged in */}
+        <Stack.Protected guard={signedIn}>
+          <Stack.Screen name="(tabs)" options={{ animation: "fade" }} />
+          <Stack.Screen name="categories" options={{ presentation: "modal" }} />
+          <Stack.Screen name="pin" options={{ presentation: "modal" }} />
+        </Stack.Protected>
+
+        {/* PUBLIC: only reachable while logged out */}
+        <Stack.Protected guard={!signedIn}>
+          <Stack.Screen name="login" options={{ animation: "fade" }} />
+          <Stack.Screen name="sign-up" options={{ animation: "slide_from_right" }} />
+          <Stack.Screen name="forgot-password" options={{ animation: "slide_from_right" }} />
+          <Stack.Screen name="auth/callback" options={{ animation: "fade" }} />
+        </Stack.Protected>
+        <Stack.Screen name="update-password" options={{ presentation: "modal" }} />
       </Stack>
       <UndoBar />
       <LockScreen />
@@ -40,10 +69,12 @@ function ThemedStack() {
 
 export default function RootLayout() {
   return (
-    <BudgetProvider>
-      <LockProvider>
-        <ThemedStack />
-      </LockProvider>
-    </BudgetProvider>
+    <AuthProvider>
+      <ScopedBudget>
+        <LockProvider>
+          <Root />
+        </LockProvider>
+      </ScopedBudget>
+    </AuthProvider>
   );
 }

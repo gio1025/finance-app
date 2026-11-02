@@ -1,6 +1,8 @@
-# Welcome to your Expo app 👋
+# KuriPot
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A calmer way to grow your money habits. KuriPot is a mobile-first personal finance app for tracking balances, income, expenses, and spending categories.
+
+Built with [Expo](https://expo.dev) and [Expo Router](https://docs.expo.dev/router/introduction/).
 
 ## Get started
 
@@ -54,3 +56,42 @@ Join our community of developers creating universal apps.
 
 - [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
 - [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+
+## Supabase setup
+
+KuriPot uses Supabase Auth for email/password accounts and PostgreSQL for each
+account's budget entries, categories, and currency preference. To connect a
+project:
+
+1. Create a Supabase project and copy its Project URL and publishable API key.
+   The app only needs the publishable key (or the legacy anon key); never put a
+   `service_role` key in a mobile app.
+2. Copy `.env.example` to `.env` and set `EXPO_PUBLIC_SUPABASE_URL` and
+   `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+3. Run the SQL files in `supabase/migrations/` in filename order in the
+   Supabase SQL Editor. The second migration adds cloud storage for recurring
+   transactions.
+4. In Supabase Authentication URL Configuration, allow the app's confirmation
+   and password-recovery redirects: `kuripot://auth/callback` and
+   `kuripot://update-password`. Add the Expo Go development redirect shown by
+   your local Expo environment when testing there.
+5. Restart Expo so it loads the environment variables:
+
+   ```bash
+   npx expo start -c
+   ```
+
+Email confirmation may be enabled in Supabase Auth; when enabled, new accounts
+must confirm their email before logging in. Apple and Google buttons remain
+unavailable until those providers are configured.
+
+Budget changes are saved on-device first. The Settings screen shows whether
+cloud sync is active and lets you refresh from Supabase or retry after a failed
+request; cloud records take priority when both cloud and local copies exist,
+while local-only records are preserved during the merge.
+
+Recurring transactions are added to history when the app opens or returns to
+the foreground. Mobile operating systems may pause the app in the background,
+so due entries are not generated while the app is closed. New schedules can be
+set up while adding a transaction or from Settings; existing schedules can be
+edited or stopped there.

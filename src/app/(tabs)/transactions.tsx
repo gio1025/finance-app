@@ -1,67 +1,85 @@
-import { Ionicons } from "@expo/vector-icons";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  FlatList,
   KeyboardAvoidingView,
-  ListRenderItem,
   Platform,
-  Pressable,
   ScrollView,
+  SectionList,
+  SectionListRenderItem,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import EntryForm from "../../lib/EntryForm";
+import EntryActionsSheet from "../../lib/EntryActionsSheet";
 import EntryRow from "../../lib/EntryRow";
+import RecurringEntrySheet from "../../lib/RecurringEntrySheet";
 import { Entry, Palette, useBudget } from "../../lib/budget";
+import { SCREEN_INSET } from "../../lib/theme";
+import {
+  Chip,
+  DayHeader,
+  EmptyState,
+  PageHeader,
+  SectionHeader,
+  groupByDay,
+  useSpokenMoney,
+} from "../../lib/ui";
 
-type Filter = "all" | "income" | "expense";
-const FILTERS: { key: Filter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "income", label: "Income" },
-  { key: "expense", label: "Expenses" },
-];
+type Section = { key: string; title: string; data: Entry[] };
 
+// One filter at a time: "all", "in", "out", or "tag:<id>"
 export default function Transactions() {
-  const { sorted, tags, tagMap, money, deleteEntry, colors: C } = useBudget();
+  const {
+    sorted,
+    tags,
+    tagMap,
+    money,
+    recurringRules,
+    addRecurringRule,
+    stopRecurringRule,
+    deleteEntry,
+    colors: C,
+  } = useBudget();
+  const spoken = useSpokenMoney();
   const s = useMemo(() => makeStyles(C), [C]);
   const [editing, setEditing] = useState<Entry | null>(null);
+  const [actionEntry, setActionEntry] = useState<Entry | null>(null);
+  const [recurringEntry, setRecurringEntry] = useState<Entry | null>(null);
   const [nonce, setNonce] = useState(0);
-  const [filter, setFilter] = useState<Filter>("all");
-  // null = all tags, "none" = untagged, otherwise a tag id
-  const [tagFilterRaw, setTagFilter] = useState<string | null>(null);
-  const listRef = useRef<FlatList<Entry>>(null);
+  const [filterRaw, setFilter] = useState("all"); // kept for the session only
+  const listRef = useRef<any>(null);
 
-  // If the filtered tag was deleted, fall back to all tags
-  const tagFilter =
-    tagFilterRaw && tagFilterRaw !== "none" && !tagMap.has(tagFilterRaw) ? null : tagFilterRaw;
+  // If the filtered category was deleted, fall back to All
+  const filter =
+    filterRaw.startsWith("tag:") && !tagMap.has(filterRaw.slice(4)) ? "all" : filterRaw;
 
-  const data = useMemo(
-    () =>
-      sorted.filter(
-        (e) =>
-          (filter === "all" || e.type === filter) &&
-          (tagFilter === null || (tagFilter === "none" ? !e.tagId : e.tagId === tagFilter))
-      ),
-    [sorted, filter, tagFilter]
+  const sections = useMemo<Section[]>(() => {
+    const rows = sorted.filter((e) =>
+      filter === "all"
+        ? true
+        : filter === "in"
+          ? e.type === "income"
+          : filter === "out"
+            ? e.type === "expense"
+            : e.tagId === filter.slice(4)
+    );
+    return groupByDay(rows);
+  }, [sorted, filter]);
+
+  const count = useMemo(() => sections.reduce((n, g) => n + g.data.length, 0), [sections]);
+  const recurringById = useMemo(
+    () => new Map(recurringRules.map((rule) => [rule.id, rule])),
+    [recurringRules]
   );
+  const selectedRule = actionEntry?.recurringId
+    ? recurringById.get(actionEntry.recurringId)
+    : undefined;
 
-  const visibleTags = useMemo(
-    () => (filter === "all" ? tags : tags.filter((t) => t.kind === filter)),
-    [tags, filter]
-  );
-
-  const changeFilter = (f: Filter) => {
-    setFilter(f);
-    if (tagFilter && tagFilter !== "none" && f !== "all" && tagMap.get(tagFilter)?.kind !== f) {
-      setTagFilter(null);
-    }
-  };
+  const scrollTop = () => listRef.current?.getScrollResponder?.()?.scrollTo?.({ y: 0, animated: true });
 
   const startEdit = useCallback((e: Entry) => {
     setEditing(e);
-    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    scrollTop();
   }, []);
 
   // After adding or saving: reset the form
@@ -78,80 +96,55 @@ export default function Transactions() {
     [deleteEntry]
   );
 
-  const renderItem: ListRenderItem<Entry> = useCallback(
+  const renderItem: SectionListRenderItem<Entry, Section> = useCallback(
     ({ item }) => (
-      <EntryRow
-        item={item}
-        tag={item.tagId ? tagMap.get(item.tagId) : undefined}
-        C={C}
-        money={money}
-        onPress={startEdit}
-        onDelete={remove}
-      />
+      <View style={s.inset}>
+        <EntryRow
+          item={item}
+          tag={item.tagId ? tagMap.get(item.tagId) : undefined}
+          recurrence={item.recurringId ? recurringById.get(item.recurringId)?.frequency : undefined}
+          C={C}
+          money={money}
+          spoken={spoken}
+          onMenu={setActionEntry}
+        />
+      </View>
     ),
-    [C, money, tagMap, startEdit, remove]
+    [C, money, spoken, tagMap, recurringById, s]
   );
 
   const header = (
-    <View>
-      <Text style={s.title}>Transactions</Text>
-      <Text style={s.subtitle}>{editing ? "Editing an entry" : "Add money in or out"}</Text>
+    <View style={s.header}>
+      <PageHeader
+        title="Transactions"
+        subtitle={editing ? "Editing an entry" : "Add money in or out"}
+        style={s.pageHeader}
+      />
 
       <EntryForm key={editing?.id ?? `new-${nonce}`} editing={editing} onDone={done} />
 
-      <View style={s.sectionHead}>
-        <Text style={s.sectionTitle}>History</Text>
-        <Text style={s.count}>
-          {data.length} {data.length === 1 ? "entry" : "entries"}
-        </Text>
+      <View style={s.sectionGap}>
+        <SectionHeader title="Activity" meta={`${count} ${count === 1 ? "entry" : "entries"}`} />
       </View>
 
-      <View style={s.filters}>
-        {FILTERS.map((f) => {
-          const active = filter === f.key;
-          return (
-            <Pressable
-              key={f.key}
-              onPress={() => changeFilter(f.key)}
-              style={[s.chip, active && s.chipActive]}
-              accessibilityRole="button"
-              accessibilityState={{ selected: active }}
-            >
-              <Text style={[s.chipText, active && { color: C.onInk }]}>{f.label}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      {tags.length > 0 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={s.tagFilters}
-          style={{ marginBottom: 14 }}
-        >
-          {[
-            { id: null, label: "All categories", color: undefined },
-            { id: "none", label: "Uncategorized", color: undefined },
-            ...visibleTags.map((t) => ({ id: t.id, label: t.name, color: t.color })),
-          ].map((t) => {
-            const active = tagFilter === t.id;
-            return (
-              <Pressable
-                key={t.id ?? "all"}
-                onPress={() => setTagFilter(t.id)}
-                style={[s.chip, active && s.chipActive]}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-              >
-                {t.color && <View style={[s.dot, { backgroundColor: t.color }]} />}
-                <Text style={[s.chipText, active && { color: C.onInk }]}>{t.label}</Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      )}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={s.chips}
+      >
+        <Chip label="All" selected={filter === "all"} onPress={() => setFilter("all")} />
+        <Chip label="In" selected={filter === "in"} onPress={() => setFilter("in")} />
+        <Chip label="Out" selected={filter === "out"} onPress={() => setFilter("out")} />
+        {tags.map((t) => (
+          <Chip
+            key={t.id}
+            label={t.name}
+            selected={filter === `tag:${t.id}`}
+            onPress={() => setFilter(`tag:${t.id}`)}
+          />
+        ))}
+      </ScrollView>
     </View>
   );
 
@@ -161,65 +154,95 @@ export default function Transactions() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <FlatList
+        <SectionList<Entry, Section>
           ref={listRef}
-          data={data}
+          showsVerticalScrollIndicator={false}
+          sections={sections}
           keyExtractor={(e) => e.id}
           renderItem={renderItem}
+          renderSectionHeader={({ section }) => (
+            <View style={s.dayWrap}>
+              <DayHeader label={section.title} />
+            </View>
+          )}
+          stickySectionHeadersEnabled
           ListHeaderComponent={header}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          initialNumToRender={10}
-          maxToRenderPerBatch={10}
-          windowSize={9}
-          removeClippedSubviews={Platform.OS === "android"}
-          contentContainerStyle={{ padding: 20, paddingBottom: 100 }}
           ListEmptyComponent={
-            <View style={s.emptyWrap}>
-              <Ionicons name="receipt-outline" size={40} color={C.muted} />
-              <Text style={s.empty}>
-                {sorted.length > 0
-                  ? "No entries match these filters."
-                  : "No entries yet. Add your salary or your first expense above."}
-              </Text>
+            <View style={s.inset}>
+              {sorted.length === 0 ? (
+                <EmptyState
+                  text="No activity yet."
+                  actionLabel="Add your first transaction"
+                  onAction={scrollTop}
+                />
+              ) : (
+                <EmptyState
+                  text="Nothing matches this filter."
+                  actionLabel="Show all"
+                  onAction={() => setFilter("all")}
+                />
+              )}
             </View>
           }
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          initialNumToRender={12}
+          windowSize={9}
+          removeClippedSubviews={Platform.OS === "android"}
+          contentContainerStyle={{ paddingBottom: 100 }}
         />
       </KeyboardAvoidingView>
+      <EntryActionsSheet
+        visible={!!actionEntry}
+        entry={actionEntry}
+        isRecurring={!!selectedRule}
+        onClose={() => setActionEntry(null)}
+        onEdit={() => {
+          if (actionEntry) startEdit(actionEntry);
+          setActionEntry(null);
+        }}
+        onDelete={() => {
+          if (actionEntry) remove(actionEntry);
+          setActionEntry(null);
+        }}
+        onMakeRecurring={() => {
+          setRecurringEntry(actionEntry);
+          setActionEntry(null);
+        }}
+        onStopRecurring={() => {
+          if (selectedRule) stopRecurringRule(selectedRule.id);
+          setActionEntry(null);
+        }}
+      />
+      {recurringEntry && (
+        <RecurringEntrySheet
+          key={recurringEntry.id}
+          visible
+          entry={recurringEntry}
+          onClose={() => setRecurringEntry(null)}
+          onSave={(frequency, endDate) => {
+            addRecurringRule(recurringEntry, frequency, endDate);
+            setRecurringEntry(null);
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
 const makeStyles = (C: Palette) =>
   StyleSheet.create({
-    screen: { flex: 1, backgroundColor: C.bg },
-    title: { fontSize: 30, fontWeight: "800", color: C.ink, letterSpacing: -0.5 },
-    subtitle: { fontSize: 15, color: C.muted, marginTop: 2, marginBottom: 20 },
-    sectionHead: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginTop: 28,
-      marginBottom: 12,
+    screen: { flex: 1, backgroundColor: C.canvas },
+    inset: { paddingHorizontal: SCREEN_INSET },
+    header: { paddingHorizontal: SCREEN_INSET, paddingTop: 16 },
+    pageHeader: { marginBottom: 24 },
+    sectionGap: { marginTop: 32, marginBottom: 12 },
+    chips: { gap: 8, paddingBottom: 8, alignItems: "center" },
+    // Sticky day header: solid canvas so rows never show through
+    dayWrap: {
+      backgroundColor: C.canvas,
+      paddingHorizontal: SCREEN_INSET,
+      paddingTop: 12,
+      paddingBottom: 6,
     },
-    sectionTitle: { fontSize: 19, fontWeight: "700", color: C.ink },
-    count: { fontSize: 14, color: C.muted },
-    filters: { flexDirection: "row", gap: 8, marginBottom: 10 },
-    tagFilters: { gap: 8, paddingVertical: 2 },
-    chip: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      borderRadius: 20,
-      borderWidth: 1,
-      borderColor: C.line,
-      backgroundColor: C.card,
-    },
-    chipActive: { backgroundColor: C.ink, borderColor: C.ink },
-    chipText: { fontSize: 14, fontWeight: "600", color: C.ink },
-    dot: { width: 10, height: 10, borderRadius: 5 },
-    emptyWrap: { alignItems: "center", gap: 10, paddingVertical: 24 },
-    empty: { fontSize: 15, color: C.muted, textAlign: "center", lineHeight: 22 },
   });

@@ -21,6 +21,8 @@ import {
   confirmChange,
   useBudget,
 } from "../lib/budget";
+import { SCREEN_INSET } from "../lib/theme";
+import { PageHeader } from "../lib/ui";
 
 type Draft = { id: string | null; name: string; kind: Tag["kind"]; color: string };
 
@@ -137,10 +139,19 @@ export default function Categories() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View style={s.top}>
-          <Text style={s.title}>Categories</Text>
-          <Pressable onPress={close} hitSlop={12} accessibilityRole="button">
-            <Text style={s.done}>Done</Text>
-          </Pressable>
+          <PageHeader
+            title="Categories"
+            style={s.pageHeader}
+            action={
+              <Pressable
+                onPress={close}
+                style={({ pressed }) => [s.doneButton, pressed && { opacity: 0.8 }]}
+                accessibilityRole="button"
+              >
+                <Text style={s.done}>Done</Text>
+              </Pressable>
+            }
+          />
         </View>
 
         <View style={s.segmentWrap}>
@@ -170,9 +181,15 @@ export default function Categories() {
         </View>
 
         <ScrollView
+          showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets
-          contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 16 }}
+          contentContainerStyle={{
+            paddingHorizontal: SCREEN_INSET,
+            paddingTop: 24,
+            paddingBottom: 40,
+            gap: 16,
+          }}
         >
           {draft && (
             <View style={s.editor}>
@@ -341,16 +358,22 @@ const makeStyles = (C: Palette) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: C.bg },
     top: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      paddingHorizontal: 20,
+      paddingHorizontal: SCREEN_INSET,
       paddingTop: 16,
       paddingBottom: 12,
     },
-    title: { fontSize: 30, fontWeight: "800", color: C.ink, letterSpacing: -0.5 },
-    done: { fontSize: 17, fontWeight: "700", color: C.ink },
-    segmentWrap: { paddingHorizontal: 20 },
+    pageHeader: { alignItems: "center" },
+    doneButton: {
+      minWidth: 76,
+      minHeight: 44,
+      paddingHorizontal: 16,
+      borderRadius: 12,
+      backgroundColor: C.accent,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    done: { fontSize: 15, fontWeight: "600", color: C.onAccent },
+    segmentWrap: { paddingHorizontal: SCREEN_INSET },
     segment: {
       flexDirection: "row",
       backgroundColor: C.card,

@@ -13,15 +13,23 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import AccountCard from "../../lib/AccountCard";
+import RecurringEntrySheet from "../../lib/RecurringEntrySheet";
 import {
   CURRENCIES,
   Palette,
   confirmAction,
   confirmChange,
+  entryDate,
+  entryLabel,
+  showDate,
   useBudget
 } from "../../lib/budget";
+import type { Entry, RecurringFrequency, RecurringRule } from "../../lib/budget";
 import CategoriesRow from "../../lib/CategoriesRow";
 import SecurityCard from "../../lib/SecurityCard";
+import { SCREEN_INSET } from "../../lib/theme";
+import { PageHeader } from "../../lib/ui";
 
 const THEMES = [
   { key: "system", label: "System", icon: "phone-portrait-outline" },
@@ -39,10 +47,25 @@ export default function Settings() {
     clearAll,
     colors: C,
     isDark,
+    syncStatus,
+    retrySync,
+    recurringRules,
+    addRecurringRule,
+    updateRecurringRule,
+    stopRecurringRule,
+    tagMap,
+    money,
   } = useBudget();
   const s = useMemo(() => makeStyles(C), [C]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [entryPickerOpen, setEntryPickerOpen] = useState(false);
+  const [recurringEntry, setRecurringEntry] = useState<Entry | null>(null);
+  const [editingRule, setEditingRule] = useState<RecurringRule | null>(null);
+  const entriesWithoutSchedule = useMemo(
+    () => entries.filter((entry) => !entry.recurringId),
+    [entries]
+  );
 
   const current = CURRENCIES.find((c) => c.code === currency) ?? CURRENCIES[0];
 
@@ -64,6 +87,36 @@ export default function Settings() {
     setQuery("");
   };
 
+  const closeRecurringSheet = () => {
+    setRecurringEntry(null);
+    setEditingRule(null);
+  };
+
+  const startEditingRule = (rule: RecurringRule) => {
+    const source = entries.find((entry) => entry.id === rule.sourceEntryId);
+    setRecurringEntry(
+      source ?? {
+        id: rule.sourceEntryId,
+        type: rule.type,
+        title: rule.title,
+        amount: rule.amount,
+        createdAt: new Date(`${rule.startDate}T${rule.time}:00`).getTime(),
+        date: rule.startDate,
+        time: rule.time,
+        tagId: rule.tagId,
+        recurringId: rule.id,
+      }
+    );
+    setEditingRule(rule);
+  };
+
+  const saveRecurringRule = (frequency: RecurringFrequency, endDate?: string) => {
+    if (!recurringEntry) return;
+    if (editingRule) updateRecurringRule(editingRule.id, frequency, endDate);
+    else addRecurringRule(recurringEntry, frequency, endDate);
+    closeRecurringSheet();
+  };
+
   const pickCurrency = (code: string) => {
     closePicker();
     if (code === currency) return;
@@ -83,12 +136,21 @@ export default function Settings() {
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
       <ScrollView
+        showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
-        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+        contentContainerStyle={{
+          paddingHorizontal: SCREEN_INSET,
+          paddingTop: 24,
+          paddingBottom: 40,
+        }}
       >
-        <Text style={s.title}>Settings</Text>
-        <Text style={s.subtitle}>Appearance applies instantly. Other changes ask first.</Text>
+        <PageHeader
+          title="Settings"
+          subtitle="Appearance applies instantly. Other changes ask first."
+          style={s.pageHeader}
+        />
+        <AccountCard />
 
         <View style={s.card}>
           <Text style={s.cardTitle}>Appearance</Text>
@@ -134,24 +196,102 @@ export default function Settings() {
         <SecurityCard />
 
         <View style={s.card}>
+          <View style={s.recurringHeading}>
+            <Text style={s.cardTitle}>Recurring transactions</Text>
+            <Pressable
+              style={s.addSchedule}
+              onPress={() => setEntryPickerOpen(true)}
+              accessibilityRole="button"
+              disabled={entriesWithoutSchedule.length === 0}
+            >
+              <Ionicons name="add" size={18} color={C.onAccent} />
+              <Text style={s.addScheduleText}>Add</Text>
+            </Pressable>
+          </View>
+          {recurringRules.length === 0 ? (
+            <Text style={s.note}>No recurring transactions yet.</Text>
+          ) : (
+            recurringRules.map((rule) => (
+              <View key={rule.id} style={s.recurringRow}>
+                <View style={s.recurringInfo}>
+                  <Text style={s.recurringTitle} numberOfLines={1}>
+                    {rule.title.trim() ||
+                      (rule.tagId ? tagMap.get(rule.tagId)?.name : undefined) ||
+                      (rule.type === "income" ? "Income" : "Expense")}
+                  </Text>
+                  <Text style={s.recurringDetail}>
+                    {money(rule.amount)} · {rule.frequency} · Next {showDate(rule.nextDate)}
+                  </Text>
+                </View>
+                <Pressable
+                  style={s.iconAction}
+                  onPress={() => startEditingRule(rule)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Edit ${rule.title || "recurring transaction"}`}
+                  hitSlop={4}
+                >
+                  <Ionicons name="create-outline" size={20} color={C.accent} />
+                </Pressable>
+                <Pressable
+                  style={s.iconAction}
+                  onPress={() =>
+                    confirmAction(
+                      "Stop recurring transaction?",
+                      "Future transactions will no longer be added. Existing transactions will remain.",
+                      "Stop",
+                      () => stopRecurringRule(rule.id)
+                    )
+                  }
+                  accessibilityRole="button"
+                  accessibilityLabel={`Stop ${rule.title || "recurring transaction"}`}
+                  hitSlop={4}
+                >
+                  <Ionicons name="trash-outline" size={20} color={C.expense} />
+                </Pressable>
+              </View>
+            ))
+          )}
+        </View>
+
+        <View style={s.card}>
           <Text style={s.cardTitle}>Your data</Text>
           <Text style={s.note}>
-            {entries.length} {entries.length === 1 ? "entry" : "entries"} saved on this device
-            only.
+            {entries.length} {entries.length === 1 ? "entry" : "entries"} saved.{" "}
+            {syncStatus === "synced"
+              ? "Your budget is synced to your account."
+              : syncStatus === "syncing"
+                ? "Syncing your budget to your account..."
+                : syncStatus === "error"
+                  ? "Couldn't sync. Your data is still saved on this device."
+                  : "Cloud sync is unavailable. Your data is saved on this device."}
           </Text>
+          {syncStatus !== "notConnected" && (
+            <Pressable
+              style={s.syncAction}
+              onPress={() => void retrySync()}
+              disabled={syncStatus === "syncing"}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: syncStatus === "syncing" }}
+            >
+              <Ionicons name="refresh-outline" size={18} color={C.accent} />
+              <Text style={s.syncActionText}>
+                {syncStatus === "error" ? "Refresh and retry sync" : "Refresh from cloud"}
+              </Text>
+            </Pressable>
+          )}
           <Pressable
             style={s.dangerBtn}
             onPress={() =>
               confirmAction(
-                "Delete all entries",
-                "This removes every entry and can't be undone.",
-                "Delete all",
+                "Delete all budget data",
+                "This removes every entry and recurring schedule. This can't be undone.",
+                "Delete all data",
                 clearAll
               )
             }
           >
             <Ionicons name="trash-outline" size={18} color={C.expense} />
-            <Text style={s.dangerText}>Delete all entries</Text>
+            <Text style={s.dangerText}>Delete all budget data</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -198,6 +338,7 @@ export default function Settings() {
 
               <FlatList
                 style={{ flex: 1 }}
+                showsVerticalScrollIndicator={false}
                 data={results}
                 keyExtractor={(c) => c.code}
                 keyboardShouldPersistTaps="handled"
@@ -234,6 +375,72 @@ export default function Settings() {
           </Pressable>
         </KeyboardAvoidingView>
       </Modal>
+      <Modal
+        visible={entryPickerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEntryPickerOpen(false)}
+      >
+        <Pressable
+          style={s.entryPickerBackdrop}
+          onPress={() => setEntryPickerOpen(false)}
+        >
+          <Pressable style={s.entryPickerSheet} onPress={() => {}}>
+            <View style={s.grabber} />
+            <View style={s.sheetHead}>
+              <Text style={s.sheetTitle}>Choose a transaction</Text>
+              <Pressable
+                onPress={() => setEntryPickerOpen(false)}
+                hitSlop={12}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={26} color={C.muted} />
+              </Pressable>
+            </View>
+            <Text style={s.note}>Choose an existing transaction to repeat.</Text>
+            <ScrollView>
+              {entriesWithoutSchedule.map((entry) => (
+                <Pressable
+                  key={entry.id}
+                  style={s.entryChoice}
+                  onPress={() => {
+                    setRecurringEntry(entry);
+                    setEditingRule(null);
+                    setEntryPickerOpen(false);
+                  }}
+                  accessibilityRole="button"
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.recurringTitle} numberOfLines={1}>
+                      {entryLabel(entry, tagMap)}
+                    </Text>
+                    <Text style={s.recurringDetail}>{showDate(entryDate(entry))}</Text>
+                  </View>
+                  <Text style={s.entryAmount}>{money(entry.amount)}</Text>
+                </Pressable>
+              ))}
+              {entriesWithoutSchedule.length === 0 && (
+                <Text style={s.note}>
+                  Add a transaction first, then you can create a recurring schedule for it.
+                </Text>
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+      {recurringEntry && (
+        <RecurringEntrySheet
+          key={editingRule?.id ?? `new-${recurringEntry.id}`}
+          visible
+          entry={recurringEntry}
+          initialFrequency={editingRule?.frequency}
+          initialEndDate={editingRule?.endDate}
+          title={editingRule ? "Edit recurring schedule" : undefined}
+          saveLabel={editingRule ? "Save changes" : undefined}
+          onClose={closeRecurringSheet}
+          onSave={saveRecurringRule}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -248,8 +455,7 @@ const makeStyles = (C: Palette) => {
   };
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: C.bg },
-    title: { fontSize: 30, fontWeight: "800", color: C.ink, letterSpacing: -0.5 },
-    subtitle: { fontSize: 15, color: C.muted, marginTop: 2, marginBottom: 20 },
+    pageHeader: { marginBottom: 20 },
     card: {
       backgroundColor: C.card,
       borderRadius: 20,
@@ -262,6 +468,74 @@ const makeStyles = (C: Palette) => {
     },
     cardTitle: { fontSize: 17, fontWeight: "700", color: C.ink },
     note: { fontSize: 15, color: C.muted, lineHeight: 22 },
+    recurringHeading: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+    },
+    addSchedule: {
+      minHeight: 40,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      paddingHorizontal: 12,
+      borderRadius: 12,
+      backgroundColor: C.accent,
+    },
+    addScheduleText: { color: C.onAccent, fontSize: 14, fontWeight: "600" },
+    recurringRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingVertical: 8,
+      borderTopWidth: 1,
+      borderTopColor: C.line,
+    },
+    recurringInfo: { flex: 1, gap: 3 },
+    recurringTitle: { fontSize: 15, fontWeight: "600", color: C.ink },
+    recurringDetail: { fontSize: 13, lineHeight: 18, color: C.muted },
+    iconAction: {
+      width: 40,
+      height: 44,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    entryPickerBackdrop: {
+      flex: 1,
+      justifyContent: "flex-end",
+      backgroundColor: "rgba(0,0,0,0.6)",
+    },
+    entryPickerSheet: {
+      height: "70%",
+      backgroundColor: C.card,
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      borderTopWidth: 1,
+      borderColor: C.line,
+      paddingHorizontal: 20,
+      paddingBottom: 20,
+    },
+    entryChoice: {
+      minHeight: 60,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      borderTopWidth: 1,
+      borderTopColor: C.line,
+    },
+    entryAmount: { fontSize: 15, fontWeight: "600", color: C.ink },
+    syncAction: {
+      minHeight: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: C.line,
+    },
+    syncActionText: { fontSize: 15, fontWeight: "600", color: C.accent },
     segment: {
       flexDirection: "row",
       backgroundColor: C.bg,

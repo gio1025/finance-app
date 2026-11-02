@@ -9,7 +9,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { Alert, Appearance, Platform, useColorScheme } from "react-native";
+import { Alert, AppState, Appearance, Platform, useColorScheme } from "react-native";
+import { loadBudgetData, syncBudgetData } from "./budgetData";
+import type { BudgetSnapshot } from "./budgetData";
+import { firstRecurringDate, materializeDueEntries } from "./recurrence";
+import { isSupabaseConfigured } from "./supabase";
+
+export type RecurringFrequency = "daily" | "weekly" | "monthly" | "yearly";
 
 export type Entry = {
   id: string;
@@ -20,6 +26,7 @@ export type Entry = {
   date?: string; // YYYY-MM-DD
   time?: string; // HH:mm (24h)
   tagId?: string; // optional
+  recurringId?: string;
 };
 
 export type EntryInput = {
@@ -31,6 +38,20 @@ export type EntryInput = {
   tagId?: string;
 };
 
+export type RecurringRule = {
+  id: string;
+  sourceEntryId: string;
+  type: Entry["type"];
+  title: string;
+  amount: number;
+  tagId?: string;
+  time: string;
+  frequency: RecurringFrequency;
+  startDate: string;
+  nextDate: string;
+  endDate?: string;
+};
+
 export type Tag = {
   id: string;
   name: string;
@@ -39,51 +60,134 @@ export type Tag = {
 };
 export type TagInput = Omit<Tag, "id">;
 
+function mergeBudgetSnapshots(
+  local: BudgetSnapshot,
+  remote: BudgetSnapshot
+): BudgetSnapshot {
+  const mergeById = <T extends { id: string }>(remoteItems: T[], localItems: T[]) => {
+    const remoteIds = new Set(remoteItems.map((item) => item.id));
+    return [...remoteItems, ...localItems.filter((item) => !remoteIds.has(item.id))];
+  };
+  const mergedTags = [...remote.tags];
+  const remoteTagsByName = new Map(
+    remote.tags.map((tag) => [`${tag.kind}:${tag.name.trim().toLowerCase()}`, tag])
+  );
+  const localTagIds = new Map<string, string>();
+
+  for (const tag of local.tags) {
+    const sameId = mergedTags.find((item) => item.id === tag.id);
+    const sameName = remoteTagsByName.get(`${tag.kind}:${tag.name.trim().toLowerCase()}`);
+    const match = sameId ?? sameName;
+    if (match) {
+      localTagIds.set(tag.id, match.id);
+    } else {
+      mergedTags.push(tag);
+      remoteTagsByName.set(`${tag.kind}:${tag.name.trim().toLowerCase()}`, tag);
+    }
+  }
+
+  return {
+    entries: mergeById(remote.entries, local.entries).map((entry) => ({
+      ...entry,
+      tagId: entry.tagId ? localTagIds.get(entry.tagId) ?? entry.tagId : undefined,
+    })),
+    recurringRules: mergeById(remote.recurringRules, local.recurringRules).map((rule) => ({
+      ...rule,
+      tagId: rule.tagId ? localTagIds.get(rule.tagId) ?? rule.tagId : undefined,
+    })),
+    tags: mergedTags,
+    currency: remote.currency,
+  };
+}
+
 export type ThemeChoice = "system" | "light" | "dark";
+export type BudgetSyncStatus = "notConnected" | "syncing" | "synced" | "error";
 
-const ENTRIES_KEY = "budget-entries-v1";
-const CURRENCY_KEY = "budget-currency-v1";
+// Entries, categories and currency are stored per signed-in account.
+// Appearance stays device-wide.
+let ENTRIES_KEY = "budget-entries-v1";
+let CURRENCY_KEY = "budget-currency-v1";
+let TAGS_KEY = "budget-tags-v1";
+let RECURRING_KEY = "budget-recurring-v1";
 const THEME_KEY = "budget-theme-v1";
-const TAGS_KEY = "budget-tags-v1";
+const LEGACY_ADOPTED_KEY = "budget-legacy-adopted-v1";
 
+export function setDataScope(id: string) {
+  const suffix = id ? `:${id}` : "";
+  ENTRIES_KEY = `budget-entries-v1${suffix}`;
+  CURRENCY_KEY = `budget-currency-v1${suffix}`;
+  TAGS_KEY = `budget-tags-v1${suffix}`;
+  RECURRING_KEY = `budget-recurring-v1${suffix}`;
+}
+
+// Semantic color tokens. Components read these names (via useBudget().colors).
 export const LIGHT = {
-  bg: "#F4F6F8",
-  ink: "#101B26",
+  // --- tokens ---
+  canvas: "#F6F4EF",
+  surface: "#FFFDF8",
+  surfaceElevated: "#FFFFFF",
+  hairline: "rgba(26, 25, 22, 0.08)",
+  textPrimary: "#1A1916",
+  textSecondary: "#6B6760",
+  textTertiary: "#8E8A83", // placeholders and decoration only (below AA)
+  accent: "#1F4D3A",
+  onAccent: "#FFFFFF",
+  positive: "#1B7F4E",
+  negative: "#B42318",
+  warning: "#8A5A12",
+  fillSubtle: "rgba(26, 25, 22, 0.05)",
+  // --- legacy names: screens not yet migrated still read these ---
+  bg: "#F6F4EF",
+  ink: "#1A1916",
   onInk: "#FFFFFF",
-  muted: "#6B7785",
-  card: "#FFFFFF",
-  line: "#E3E8ED",
-  income: "#17805F",
-  expense: "#C0264F",
+  muted: "#6B6760",
+  card: "#FFFDF8",
+  line: "rgba(26, 25, 22, 0.08)",
+  income: "#1B7F4E",
+  expense: "#B42318",
   onFill: "#FFFFFF",
-  incomeSoft: "#E3F4EC",
-  expenseSoft: "#FBE6EC",
-  heroBg: "#101B26",
+  incomeSoft: "rgba(27, 127, 78, 0.12)",
+  expenseSoft: "rgba(180, 35, 24, 0.10)",
+  heroBg: "#1A1916",
   heroText: "#FFFFFF",
-  heroMuted: "#9FB0C0",
-  heroIncome: "#5FD3A8",
-  heroExpense: "#FF8DA9",
-  highlight: "#EAEFF3",
+  heroMuted: "#A7A49C",
+  heroIncome: "#7DCEA0",
+  heroExpense: "#F0A8A0",
+  highlight: "rgba(26, 25, 22, 0.06)",
 };
 
+// Dark is its own palette, not an inverted copy of light
 export const DARK: typeof LIGHT = {
-  bg: "#090E13",
-  ink: "#F4F8FB",
-  onInk: "#090E13",
-  muted: "#A7B4C1",
-  card: "#17212B",
-  line: "#364656",
-  income: "#4FD1A5",
-  expense: "#FF7C9C",
-  onFill: "#08120E",
-  incomeSoft: "#17402F",
-  expenseSoft: "#47212F",
-  heroBg: "#1F3144",
-  heroText: "#FFFFFF",
-  heroMuted: "#B3C2D1",
-  heroIncome: "#6FE0B6",
-  heroExpense: "#FF9DB5",
-  highlight: "#2A3B4C",
+  canvas: "#2A2F2A",
+  surface: "#353A34",
+  surfaceElevated: "#414740",
+  hairline: "rgba(243, 241, 234, 0.12)",
+  textPrimary: "#F5F2E8",
+  textSecondary: "#C1C3B9",
+  textTertiary: "#969A90",
+  accent: "#A1CBAE",
+  onAccent: "#2A2F2A",
+  positive: "#91D3A8",
+  negative: "#FFAAA0",
+  warning: "#E9C98E",
+  fillSubtle: "rgba(243, 241, 234, 0.08)",
+  bg: "#2A2F2A",
+  ink: "#F5F2E8",
+  onInk: "#2A2F2A",
+  muted: "#C1C3B9",
+  card: "#353A34",
+  line: "rgba(243, 241, 234, 0.12)",
+  income: "#91D3A8",
+  expense: "#FFAAA0",
+  onFill: "#2A2F2A",
+  incomeSoft: "rgba(145, 211, 168, 0.18)",
+  expenseSoft: "rgba(255, 170, 160, 0.18)",
+  heroBg: "#414740",
+  heroText: "#F5F2E8",
+  heroMuted: "#C1C3B9",
+  heroIncome: "#91D3A8",
+  heroExpense: "#FFAAA0",
+  highlight: "rgba(243, 241, 234, 0.10)",
 };
 
 export type Palette = typeof LIGHT;
@@ -257,7 +361,10 @@ export function confirmChange(
 
 type BudgetContextValue = {
   loaded: boolean;
+  syncStatus: BudgetSyncStatus;
+  retrySync: () => Promise<void>;
   entries: Entry[];
+  recurringRules: RecurringRule[];
   sorted: Entry[];
   totals: { income: number; expense: number; balance: number };
   tags: Tag[];
@@ -273,9 +380,16 @@ type BudgetContextValue = {
   isDark: boolean;
   colors: Palette;
   money: (n: number) => string;
-  addEntry: (input: EntryInput) => void;
+  addEntry: (input: EntryInput) => Entry;
   updateEntry: (id: string, input: EntryInput) => void;
   deleteEntry: (entry: Entry) => void;
+  addRecurringRule: (entry: Entry, frequency: RecurringFrequency, endDate?: string) => void;
+  updateRecurringRule: (
+    id: string,
+    frequency: RecurringFrequency,
+    endDate?: string
+  ) => void;
+  stopRecurringRule: (id: string) => void;
   clearAll: () => void;
   undo: Entry | null;
   undoDelete: () => void;
@@ -290,66 +404,186 @@ export function useBudget() {
   return ctx;
 }
 
-export function BudgetProvider({ children }: { children: ReactNode }) {
+export function BudgetProvider({
+  children,
+  userId,
+}: {
+  children: ReactNode;
+  userId?: string;
+}) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [currency, setCurrency] = useState("USD");
   const [theme, setTheme] = useState<ThemeChoice>("system");
   const [loaded, setLoaded] = useState(false);
+  const [remoteReady, setRemoteReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<BudgetSyncStatus>("notConnected");
   const [undo, setUndo] = useState<Entry | null>(null);
+  const [undoRecurringRule, setUndoRecurringRule] = useState<RecurringRule | null>(null);
+  const [undoRecurringEntries, setUndoRecurringEntries] = useState<Entry[]>([]);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncQueue = useRef<Promise<void>>(Promise.resolve());
+  const retryingSync = useRef(false);
+  const snapshotRef = useRef<BudgetSnapshot>({ entries, recurringRules, tags, currency });
   const system = useColorScheme();
 
   const isDark = theme === "dark" || (theme === "system" && system === "dark");
   const colors = isDark ? DARK : LIGHT;
 
-  // Load saved data once
   useEffect(() => {
-    Promise.all([
-      AsyncStorage.getItem(ENTRIES_KEY),
-      AsyncStorage.getItem(CURRENCY_KEY),
-      AsyncStorage.getItem(THEME_KEY),
-      AsyncStorage.getItem(TAGS_KEY),
-    ])
-      .then(([rawEntries, rawCurrency, rawTheme, rawTags]) => {
-        if (rawEntries) {
-          const parsed: Entry[] = JSON.parse(rawEntries);
-          // Give older entries a real date once, so sorting stays cheap
-          setEntries(
-            parsed.map((e) => ({
-              ...e,
-              title: e.title ?? "",
-              date: e.date ?? toDateStr(new Date(e.createdAt)),
-            }))
-          );
+    let active = true;
+    async function initialize() {
+      let shouldSyncRemote = false;
+      setSyncStatus(userId && isSupabaseConfigured ? "syncing" : "notConnected");
+      try {
+        if (userId && isSupabaseConfigured) {
+          const adoptedUser = await AsyncStorage.getItem(LEGACY_ADOPTED_KEY);
+          if (!adoptedUser) {
+            for (const key of [
+              "budget-entries-v1",
+              "budget-currency-v1",
+              "budget-tags-v1",
+              "budget-recurring-v1",
+            ]) {
+              const legacyValue = await AsyncStorage.getItem(key);
+              if (legacyValue !== null) {
+                await AsyncStorage.setItem(`${key}:${userId}`, legacyValue);
+                await AsyncStorage.removeItem(key);
+              }
+            }
+            await AsyncStorage.setItem(LEGACY_ADOPTED_KEY, userId);
+          }
         }
-        // First run with tags: start with a few useful ones
-        let loadedTags: Tag[] | null = null;
-        if (rawTags) {
+
+        const [rawEntries, rawCurrency, rawTheme, rawTags, rawRecurringRules] = await Promise.all([
+          AsyncStorage.getItem(ENTRIES_KEY),
+          AsyncStorage.getItem(CURRENCY_KEY),
+          AsyncStorage.getItem(THEME_KEY),
+          AsyncStorage.getItem(TAGS_KEY),
+          AsyncStorage.getItem(RECURRING_KEY),
+        ]);
+        const localEntries: Entry[] = rawEntries ? JSON.parse(rawEntries) : [];
+        const localRecurringRules: RecurringRule[] = rawRecurringRules
+          ? JSON.parse(rawRecurringRules)
+          : [];
+        const localTags: Tag[] = rawTags
+          ? JSON.parse(rawTags)
+          : SUGGESTED_TAGS.filter((tag) => DEFAULT_TAG_NAMES.includes(tag.name)).map(makeTag);
+        const foundCurrency = CURRENCIES.find(
+          (item) => item.code === rawCurrency || item.symbol === rawCurrency
+        );
+        const rawSnapshot = {
+          entries: localEntries.map((entry) => ({
+            ...entry,
+            title: entry.title ?? "",
+            date: entry.date ?? toDateStr(new Date(entry.createdAt)),
+          })),
+          recurringRules: localRecurringRules,
+          tags: localTags,
+          currency: foundCurrency?.code ?? "USD",
+        };
+        let snapshot: BudgetSnapshot = rawSnapshot;
+
+        if (userId && isSupabaseConfigured) {
           try {
-            loadedTags = JSON.parse(rawTags);
-          } catch {}
+            snapshot = mergeBudgetSnapshots(
+              rawSnapshot,
+              await loadBudgetData(userId, rawSnapshot)
+            );
+            shouldSyncRemote = true;
+          } catch (error) {
+            console.warn("Unable to load KuriPot data from Supabase.", error);
+            setSyncStatus("error");
+            // Cloud sync is optional. Keep startup and the on-device budget usable when
+            // the device is offline or the Supabase project is temporarily unavailable.
+          }
         }
-        setTags(
-          loadedTags ??
-            SUGGESTED_TAGS.filter((t) => DEFAULT_TAG_NAMES.includes(t.name)).map(makeTag)
+
+        if (!active) return;
+        const caughtUp = materializeDueEntries(
+          snapshot.recurringRules ?? [],
+          snapshot.entries,
+          toDateStr(new Date())
         );
-        const found = CURRENCIES.find(
-          (c) => c.code === rawCurrency || c.symbol === rawCurrency
+        setEntries(
+          caughtUp.entries.map((entry) => ({
+            ...entry,
+            title: entry.title ?? "",
+            date: entry.date ?? toDateStr(new Date(entry.createdAt)),
+          }))
         );
-        if (found) setCurrency(found.code);
+        setRecurringRules(caughtUp.rules);
+        setTags(snapshot.tags);
+        setCurrency(snapshot.currency);
         if (rawTheme === "system" || rawTheme === "light" || rawTheme === "dark") {
           setTheme(rawTheme);
         }
-      })
-      .catch(() => {})
-      .finally(() => setLoaded(true));
-  }, []);
+        if (shouldSyncRemote) setRemoteReady(true);
+      } catch (error) {
+        console.warn("Unable to load KuriPot's saved budget.", error);
+        notify("Budget couldn't be loaded", "Restart the app and try again.");
+      } finally {
+        if (active) setLoaded(true);
+      }
+    }
+    void initialize();
+    return () => {
+      active = false;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    snapshotRef.current = { entries, recurringRules, tags, currency };
+  }, [entries, recurringRules, tags, currency]);
+
+  const queueSync = useCallback(
+    (snapshot: BudgetSnapshot) => {
+      if (!userId) return Promise.resolve();
+      const operation = syncQueue.current.then(() => {
+        setSyncStatus("syncing");
+        return syncBudgetData(userId, snapshot);
+      });
+      syncQueue.current = operation.catch(() => {});
+      return operation;
+    },
+    [userId]
+  );
+
+  const retrySync = useCallback(async () => {
+    if (!loaded || !userId || !isSupabaseConfigured || retryingSync.current) return;
+    retryingSync.current = true;
+    setSyncStatus("syncing");
+    try {
+      const remote = await loadBudgetData(userId, snapshotRef.current);
+      const merged = mergeBudgetSnapshots(snapshotRef.current, remote);
+      setEntries(merged.entries);
+      setRecurringRules(merged.recurringRules);
+      setTags(merged.tags);
+      setCurrency(merged.currency);
+      setRemoteReady(true);
+      await queueSync(merged);
+      setSyncStatus("synced");
+    } catch (error) {
+      console.warn("Unable to retry KuriPot cloud sync.", error);
+      setSyncStatus("error");
+    } finally {
+      retryingSync.current = false;
+    }
+  }, [loaded, userId, queueSync]);
 
   // Save when data changes (after the first load)
   useEffect(() => {
     if (loaded) AsyncStorage.setItem(ENTRIES_KEY, JSON.stringify(entries)).catch(() => {});
   }, [entries, loaded]);
+
+  useEffect(() => {
+    if (loaded) {
+      AsyncStorage.setItem(RECURRING_KEY, JSON.stringify(recurringRules)).catch((error: unknown) => {
+        console.warn("Unable to save recurring transactions on this device.", error);
+      });
+    }
+  }, [recurringRules, loaded]);
 
   useEffect(() => {
     if (loaded) AsyncStorage.setItem(TAGS_KEY, JSON.stringify(tags)).catch(() => {});
@@ -358,6 +592,53 @@ export function BudgetProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (loaded) AsyncStorage.setItem(CURRENCY_KEY, currency).catch(() => {});
   }, [currency, loaded]);
+
+  useEffect(() => {
+    if (!loaded || !remoteReady || !userId) return;
+    const snapshot = { entries, recurringRules, tags, currency };
+    void queueSync(snapshot)
+      .then(() => setSyncStatus("synced"))
+      .catch((error: unknown) => {
+        console.warn("Unable to sync KuriPot data to Supabase.", error);
+        setSyncStatus("error");
+        // The local write has already completed. Do not interrupt the user with a
+        // modal for a recoverable network/cloud-sync failure.
+      });
+  }, [entries, recurringRules, tags, currency, loaded, remoteReady, userId, queueSync]);
+
+  const processDueRecurrences = useCallback(() => {
+    const result = materializeDueEntries(recurringRules, entries, toDateStr(new Date()));
+    if (result.entriesChanged) setEntries(result.entries);
+    if (result.rulesChanged) setRecurringRules(result.rules);
+  }, [recurringRules, entries]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        processDueRecurrences();
+        if (syncStatus === "error") void retrySync();
+      }
+    });
+    const activeRules = recurringRules.filter(
+      (rule) => !rule.endDate || rule.nextDate <= rule.endDate
+    );
+    const nextDue = activeRules.reduce(
+      (earliest, rule) => Math.min(earliest, new Date(`${rule.nextDate}T00:00:00`).getTime()),
+      Number.POSITIVE_INFINITY
+    );
+    const timeout =
+      activeRules.length > 0
+        ? setTimeout(
+            processDueRecurrences,
+            Math.max(1000, Math.min(nextDue - Date.now(), 24 * 60 * 60 * 1000))
+          )
+        : null;
+    return () => {
+      subscription.remove();
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [loaded, processDueRecurrences, recurringRules, retrySync, syncStatus]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -409,32 +690,143 @@ export function BudgetProvider({ children }: { children: ReactNode }) {
       ...input,
     };
     setEntries((list) => [entry, ...list]);
+    return entry;
   }, []);
 
   const updateEntry = useCallback((id: string, input: EntryInput) => {
     setEntries((list) => list.map((e) => (e.id === id ? { ...e, ...input } : e)));
+    setRecurringRules((list) =>
+      list.map((rule) =>
+        rule.sourceEntryId === id
+          ? {
+              ...rule,
+              type: input.type,
+              title: input.title,
+              amount: input.amount,
+              tagId: input.tagId,
+              time: input.time,
+              startDate: input.date,
+              nextDate: firstRecurringDate(input.date, rule.frequency, toDateStr(new Date())),
+            }
+          : rule
+      )
+    );
   }, []);
 
   const dismissUndo = useCallback(() => {
     if (undoTimer.current) clearTimeout(undoTimer.current);
     setUndo(null);
+    setUndoRecurringRule(null);
+    setUndoRecurringEntries([]);
   }, []);
 
-  const deleteEntry = useCallback((entry: Entry) => {
-    setEntries((list) => list.filter((e) => e.id !== entry.id));
-    setUndo(entry);
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-    undoTimer.current = setTimeout(() => setUndo(null), 5000);
+  const deleteEntry = useCallback(
+    (entry: Entry) => {
+      const sourceRule = recurringRules.find((rule) => rule.sourceEntryId === entry.id) ?? null;
+      const linkedEntries = sourceRule
+        ? entries.filter((item) => item.recurringId === sourceRule.id && item.id !== entry.id)
+        : [];
+      setEntries((list) =>
+        list
+          .filter((item) => item.id !== entry.id)
+          .map((item) =>
+            sourceRule && item.recurringId === sourceRule.id
+              ? { ...item, recurringId: undefined }
+              : item
+          )
+      );
+      if (sourceRule) {
+        setRecurringRules((list) => list.filter((rule) => rule.id !== sourceRule.id));
+      }
+      setUndo(entry);
+      setUndoRecurringRule(sourceRule);
+      setUndoRecurringEntries(linkedEntries);
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+      undoTimer.current = setTimeout(() => {
+        setUndo(null);
+        setUndoRecurringRule(null);
+        setUndoRecurringEntries([]);
+      }, 5000);
+    },
+    [entries, recurringRules]
+  );
+
+  const addRecurringRule = useCallback(
+    (entry: Entry, frequency: RecurringFrequency, endDate?: string) => {
+      const startDate = entryDate(entry);
+      const today = toDateStr(new Date());
+      const nextDate = firstRecurringDate(startDate, frequency, today);
+      if (endDate && endDate < nextDate) {
+        notify("End date is too soon", "Choose an end date on or after the next occurrence.");
+        return;
+      }
+      const id = `r${newId()}`;
+      const rule: RecurringRule = {
+        id,
+        sourceEntryId: entry.id,
+        type: entry.type,
+        title: entry.title,
+        amount: entry.amount,
+        tagId: entry.tagId,
+        time: entry.time ?? toTimeStr(new Date()),
+        frequency,
+        startDate,
+        nextDate,
+        endDate,
+      };
+      setRecurringRules((list) => [...list, rule]);
+      setEntries((list) =>
+        list.map((item) => (item.id === entry.id ? { ...item, recurringId: id } : item))
+      );
+    },
+    []
+  );
+
+  const stopRecurringRule = useCallback((id: string) => {
+    setRecurringRules((list) => list.filter((rule) => rule.id !== id));
+    setEntries((list) =>
+      list.map((entry) =>
+        entry.recurringId === id ? { ...entry, recurringId: undefined } : entry
+      )
+    );
   }, []);
+
+  const updateRecurringRule = useCallback(
+    (id: string, frequency: RecurringFrequency, endDate?: string) => {
+      const rule = recurringRules.find((item) => item.id === id);
+      if (!rule) return;
+      const nextDate = firstRecurringDate(rule.startDate, frequency, toDateStr(new Date()));
+      if (endDate && endDate < nextDate) {
+        notify("End date is too soon", "Choose an end date on or after the next occurrence.");
+        return;
+      }
+      setRecurringRules((list) =>
+        list.map((item) =>
+          item.id === id ? { ...item, frequency, nextDate, endDate } : item
+        )
+      );
+    },
+    [recurringRules]
+  );
 
   const undoDelete = useCallback(() => {
     if (!undo) return;
-    setEntries((list) => [undo, ...list]);
+    const restoredEntries = new Map(undoRecurringEntries.map((entry) => [entry.id, entry]));
+    setEntries((list) =>
+      [
+        { ...undo, recurringId: undoRecurringRule?.id ?? undo.recurringId },
+        ...list,
+      ].map((entry) => restoredEntries.get(entry.id) ?? entry)
+    );
+    if (undoRecurringRule) {
+      setRecurringRules((list) => [...list, undoRecurringRule]);
+    }
     dismissUndo();
-  }, [undo, dismissUndo]);
+  }, [undo, undoRecurringRule, undoRecurringEntries, dismissUndo]);
 
   const clearAll = useCallback(() => {
     setEntries([]);
+    setRecurringRules([]);
     dismissUndo();
   }, [dismissUndo]);
 
@@ -448,17 +840,28 @@ export function BudgetProvider({ children }: { children: ReactNode }) {
     setEntries((list) =>
       list.map((e) => (e.tagId === id && e.type !== input.kind ? { ...e, tagId: undefined } : e))
     );
+    setRecurringRules((list) =>
+      list.map((rule) =>
+        rule.tagId === id && rule.type !== input.kind ? { ...rule, tagId: undefined } : rule
+      )
+    );
   }, []);
 
   const deleteTag = useCallback((id: string) => {
     setTags((list) => list.filter((t) => t.id !== id));
     setEntries((list) => list.map((e) => (e.tagId === id ? { ...e, tagId: undefined } : e)));
+    setRecurringRules((list) =>
+      list.map((rule) => (rule.tagId === id ? { ...rule, tagId: undefined } : rule))
+    );
   }, []);
 
   const value = useMemo<BudgetContextValue>(
     () => ({
       loaded,
+      syncStatus,
+      retrySync,
       entries,
+      recurringRules,
       sorted,
       totals,
       tags,
@@ -477,6 +880,9 @@ export function BudgetProvider({ children }: { children: ReactNode }) {
       addEntry,
       updateEntry,
       deleteEntry,
+      addRecurringRule,
+      updateRecurringRule,
+      stopRecurringRule,
       clearAll,
       undo,
       undoDelete,
@@ -484,7 +890,10 @@ export function BudgetProvider({ children }: { children: ReactNode }) {
     }),
     [
       loaded,
+      syncStatus,
+      retrySync,
       entries,
+      recurringRules,
       sorted,
       totals,
       tags,
@@ -501,6 +910,9 @@ export function BudgetProvider({ children }: { children: ReactNode }) {
       addEntry,
       updateEntry,
       deleteEntry,
+      addRecurringRule,
+      updateRecurringRule,
+      stopRecurringRule,
       clearAll,
       undo,
       undoDelete,

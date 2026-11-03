@@ -1,4 +1,6 @@
 import { Stack } from "expo-router";
+import { useFonts } from "expo-font";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { ReactNode, useEffect, useRef } from "react";
@@ -68,6 +70,12 @@ function Root() {
 }
 
 export default function RootLayout() {
+  const [iconsLoaded, iconFontError] = useFonts(Ionicons.font);
+
+  // Keep the splash screen visible until Ionicons is ready, so web deployments
+  // don't briefly or permanently show missing-glyph boxes.
+  if (!iconsLoaded && !iconFontError) return null;
+
   return (
     <AuthProvider>
       <ScopedBudget>

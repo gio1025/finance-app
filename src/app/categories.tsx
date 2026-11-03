@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -30,6 +31,8 @@ export default function Categories() {
   const router = useRouter();
   const { tags, entries, addTag, updateTag, deleteTag, colors: C, isDark } = useBudget();
   const s = useMemo(() => makeStyles(C), [C]);
+  const { width } = useWindowDimensions();
+  const desktop = Platform.OS === "web" && width >= 768;
   const [kind, setKind] = useState<Tag["kind"]>("expense");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState("");
@@ -138,9 +141,10 @@ export default function Categories() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={s.top}>
+        <View style={[s.top, desktop && s.desktopContent]}>
           <PageHeader
             title="Categories"
+            subtitle="These remain attached to older transactions. New entries use descriptions."
             style={s.pageHeader}
             action={
               <Pressable
@@ -154,7 +158,7 @@ export default function Categories() {
           />
         </View>
 
-        <View style={s.segmentWrap}>
+        <View style={[s.segmentWrap, desktop && s.desktopContent]}>
           <View style={s.segment}>
             {(
               [
@@ -184,12 +188,12 @@ export default function Categories() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets
-          contentContainerStyle={{
+          contentContainerStyle={[s.desktopContent, {
             paddingHorizontal: SCREEN_INSET,
             paddingTop: 24,
             paddingBottom: 40,
             gap: 16,
-          }}
+          }]}
         >
           {draft && (
             <View style={s.editor}>
@@ -357,6 +361,7 @@ export default function Categories() {
 const makeStyles = (C: Palette) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: C.bg },
+    desktopContent: { width: "100%", maxWidth: 760, alignSelf: "center" },
     top: {
       paddingHorizontal: SCREEN_INSET,
       paddingTop: 16,

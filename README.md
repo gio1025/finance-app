@@ -60,7 +60,7 @@ Join our community of developers creating universal apps.
 ## Supabase setup
 
 KuriPot uses Supabase Auth for email/password accounts and PostgreSQL for each
-account's budget entries, categories, and currency preference. To connect a
+account's budget entries, categories, saved descriptions, and currency preference. To connect a
 project:
 
 1. Create a Supabase project and copy its Project URL and publishable API key.
@@ -70,7 +70,9 @@ project:
    `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
 3. Run the SQL files in `supabase/migrations/` in filename order in the
    Supabase SQL Editor. The second migration adds cloud storage for recurring
-   transactions.
+   transactions, the third adds reusable saved descriptions, and the fourth
+   separates saved descriptions by income or expense. Existing descriptions
+   are kept available to both transaction types.
 4. In Supabase Authentication URL Configuration, allow the app's confirmation
    and password-recovery redirects: `kuripot://auth/callback` and
    `kuripot://update-password`. Add the Expo Go development redirect shown by

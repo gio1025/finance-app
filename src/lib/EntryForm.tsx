@@ -1,9 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
 import { memo, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { DateField, TimeField } from "./Pickers";
 import RecurringEntrySheet from "./RecurringEntrySheet";
+import type { RecurringFrequency } from "./budget";
 import {
   Entry,
   Palette,
@@ -13,7 +13,6 @@ import {
   toTimeStr,
   useBudget,
 } from "./budget";
-import type { RecurringFrequency } from "./budget";
 import { haptics } from "./haptics";
 import { radius, type } from "./theme";
 import { Chip, Hairline, PrimaryButton, TextButton } from "./ui";
@@ -45,39 +44,41 @@ function EntryForm({ editing, onDone }: Props) {
   const {
     addEntry,
     addRecurringRule,
+    addSavedDescription,
     updateEntry,
-    tags,
     tagMap,
+    savedDescriptions,
     symbol,
     colors: C,
     isDark,
   } = useBudget();
   const s = useMemo(() => makeStyles(C), [C]);
-  const router = useRouter();
 
   const [type, setType] = useState<Entry["type"]>(editing?.type ?? "expense");
-  const [title, setTitle] = useState(editing?.title ?? "");
+  const [title, setTitle] = useState(
+    editing
+      ? [editing.title.trim(), editing.tagId ? tagMap.get(editing.tagId)?.name : ""]
+          .filter(Boolean)
+          .join(" · ")
+      : ""
+  );
   const [amount, setAmount] = useState(editing ? formatAmountInput(String(editing.amount)) : "");
-  const [tagId, setTagId] = useState<string | undefined>(editing?.tagId);
   const [date, setDate] = useState(editing ? entryDate(editing) : toDateStr(new Date()));
   const [time, setTime] = useState(
     editing ? editing.time ?? toTimeStr(new Date(editing.createdAt)) : toTimeStr(new Date())
   );
   const [recurringDraft, setRecurringDraft] = useState<Entry | null>(null);
+  const [descriptionError, setDescriptionError] = useState("");
 
   const keyboard = isDark ? "dark" : "light";
-  const tagsForType = useMemo(() => tags.filter((t) => t.kind === type), [tags, type]);
-
+  const typeDescriptions = useMemo(
+    () => savedDescriptions.filter((description) => description.type === type || description.type === "both"),
+    [savedDescriptions, type]
+  );
   const value = parseAmount(amount);
   const amountValid = value > 0;
   // Only complain once something has been typed
   const amountError = amount.length > 0 && !amountValid ? "Enter an amount above 0" : "";
-
-  const changeType = (t: Entry["type"]) => {
-    setType(t);
-    // A category only belongs to one type
-    if (tagId && tagMap.get(tagId)?.kind !== t) setTagId(undefined);
-  };
 
   const setNow = () => {
     const n = new Date();
@@ -87,7 +88,11 @@ function EntryForm({ editing, onDone }: Props) {
 
   const save = () => {
     if (!amountValid) return;
-    const input = { type, title: title.trim(), amount: value, date, time, tagId };
+    if (!editing && !title.trim()) {
+      setDescriptionError("Enter a description to continue.");
+      return;
+    }
+    const input = { type, title: title.trim(), amount: value, date, time };
     if (editing) updateEntry(editing.id, input);
     else addEntry(input);
     haptics.success();
@@ -96,6 +101,10 @@ function EntryForm({ editing, onDone }: Props) {
 
   const configureRepeat = () => {
     if (!amountValid) return;
+    if (!title.trim()) {
+      setDescriptionError("Enter a description to continue.");
+      return;
+    }
     setRecurringDraft({
       id: "draft",
       type,
@@ -104,13 +113,12 @@ function EntryForm({ editing, onDone }: Props) {
       createdAt: new Date(`${date}T${time}:00`).getTime(),
       date,
       time,
-      tagId,
     });
   };
 
   const saveRecurring = (frequency: RecurringFrequency, endDate?: string) => {
-    if (!amountValid) return;
-    const entry = addEntry({ type, title: title.trim(), amount: value, date, time, tagId });
+    if (!amountValid || !title.trim()) return;
+    const entry = addEntry({ type, title: title.trim(), amount: value, date, time });
     addRecurringRule(entry, frequency, endDate);
     haptics.success();
     setRecurringDraft(null);
@@ -120,8 +128,8 @@ function EntryForm({ editing, onDone }: Props) {
   return (
     <View style={s.form}>
       <View style={s.chipRow}>
-        <Chip label="Expense" selected={type === "expense"} onPress={() => changeType("expense")} />
-        <Chip label="Income" selected={type === "income"} onPress={() => changeType("income")} />
+        <Chip label="Expense" selected={type === "expense"} onPress={() => setType("expense")} />
+        <Chip label="Income" selected={type === "income"} onPress={() => setType("income")} />
       </View>
 
       {/* The amount is the screen */}
@@ -129,7 +137,7 @@ function EntryForm({ editing, onDone }: Props) {
         <View style={s.amountRow}>
           <Text style={s.symbol}>{symbol}</Text>
           <TextInput
-            style={s.amountInput}
+            style={[s.amountInput, { color: type === "income" ? C.positive : C.negative }]}
             placeholder="0.00"
             placeholderTextColor={C.textTertiary}
             keyboardAppearance={keyboard}
@@ -145,9 +153,9 @@ function EntryForm({ editing, onDone }: Props) {
       </View>
 
       <View style={s.field}>
-        <Text style={s.label}>{type === "income" ? "Source" : "Description"} (optional)</Text>
+        <Text style={s.label}>{editing ? "Description" : "Description"}</Text>
         <TextInput
-          style={s.input}
+          style={[s.input, !!descriptionError && s.inputError]}
           placeholder={type === "income" ? "e.g. October salary" : "e.g. Lunch with friends"}
           placeholderTextColor={C.textTertiary}
           keyboardAppearance={keyboard}
@@ -155,35 +163,61 @@ function EntryForm({ editing, onDone }: Props) {
           returnKeyType="done"
           maxLength={60}
           value={title}
-          onChangeText={setTitle}
+          onChangeText={(text) => {
+            setTitle(text);
+            if (text.trim()) setDescriptionError("");
+          }}
         />
-      </View>
-
-      <View style={s.field}>
-        <Text style={s.label}>Category (optional)</Text>
-        {/* One line that scrolls sideways */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          nestedScrollEnabled
-          contentContainerStyle={s.catContent}
-        >
-          {tagsForType.map((t) => (
-            <Chip
-              key={t.id}
-              label={t.name}
-              selected={tagId === t.id}
-              onPress={() => setTagId(tagId === t.id ? undefined : t.id)}
-            />
-          ))}
-          <Chip
-            dashed
-            icon="add-outline"
-            label={tagsForType.length === 0 ? "Add category" : "New"}
-            onPress={() => router.push("/categories")}
-          />
-        </ScrollView>
+        {!!descriptionError && <Text style={s.error}>{descriptionError}</Text>}
+        {typeDescriptions.length > 0 && (
+          <View style={s.savedDescriptions}>
+            <Text style={s.savedDescriptionsLabel}>Saved descriptions</Text>
+            <View style={s.savedDescriptionList}>
+              {typeDescriptions.map((description) => {
+                const selected =
+                  title.trim().toLocaleLowerCase() === description.name.toLocaleLowerCase();
+                return (
+                  <Pressable
+                    key={description.id}
+                    style={[s.savedDescriptionChip, selected && s.savedDescriptionChipSelected]}
+                    onPress={() => {
+                      setTitle(description.name);
+                      setDescriptionError("");
+                    }}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                  >
+                    <Text
+                      style={[
+                        s.savedDescriptionText,
+                        selected && s.savedDescriptionTextSelected,
+                      ]}
+                    >
+                      {description.name}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        )}
+        <View style={s.descriptionActions}>
+          {!!title.trim() &&
+            !savedDescriptions.some(
+              (description) =>
+                description.name.toLocaleLowerCase() === title.trim().toLocaleLowerCase() &&
+                (description.type === type || description.type === "both")
+            ) && (
+              <Pressable
+                style={s.savedButton}
+                onPress={() => addSavedDescription(title, type)}
+                accessibilityRole="button"
+              >
+                <Ionicons name="add-circle-outline" size={17} color={C.accent} />
+                <Text style={s.savedButtonText}>Save this</Text>
+              </Pressable>
+            )}
+        </View>
       </View>
 
       <View style={s.field}>
@@ -280,7 +314,35 @@ const makeStyles = (C: Palette) =>
       backgroundColor: C.surface,
       color: C.textPrimary,
     },
-    catContent: { gap: 8, alignItems: "center", paddingVertical: 2 },
+    inputError: { borderColor: C.negative },
+    savedDescriptions: { gap: 8 },
+    savedDescriptionsLabel: { ...type.meta, fontWeight: "500", color: C.textSecondary },
+    savedDescriptionList: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+    savedDescriptionChip: {
+      minHeight: 36,
+      justifyContent: "center",
+      paddingHorizontal: 12,
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: C.hairline,
+      backgroundColor: C.surface,
+    },
+    savedDescriptionChipSelected: { borderColor: C.accent, backgroundColor: C.highlight },
+    savedDescriptionText: { ...type.meta, color: C.textPrimary },
+    savedDescriptionTextSelected: { color: C.accent, fontWeight: "600" },
+    descriptionActions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+    savedButton: {
+      minHeight: 36,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: 10,
+      borderRadius: 10,
+      backgroundColor: C.surface,
+      borderWidth: 1,
+      borderColor: C.hairline,
+    },
+    savedButtonText: { fontSize: 13, fontWeight: "600", color: C.accent },
     repeatButton: {
       minHeight: 58,
       flexDirection: "row",

@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ElementRef } from "react";
 import { Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { useAuth } from "../lib/auth/AuthContext";
@@ -11,7 +11,7 @@ import { Palette, useBudget } from "../lib/budget";
 export default function Login() {
   const router = useRouter();
   const { colors: C } = useBudget();
-  const { signIn, signInWithProvider, rememberedEmail } = useAuth();
+  const { signIn, signInWithProvider, rememberedEmail, continueAsGuest, status } = useAuth();
   const s = useMemo(() => makeStyles(C), [C]);
 
   // Controlled inputs
@@ -24,6 +24,16 @@ export default function Login() {
   const [formError, setFormError] = useState("");
   const passwordRef = useRef<ElementRef<typeof TextInput>>(null);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
+  const [enteringGuestMode, setEnteringGuestMode] = useState(false);
+
+  useEffect(() => {
+    if (enteringGuestMode && status === "guest") router.replace("/(tabs)");
+  }, [enteringGuestMode, router, status]);
+
+  const enterAsGuest = async () => {
+    setEnteringGuestMode(true);
+    await continueAsGuest();
+  };
 
   const errors = { email: validateEmail(email), password: validateLoginPassword(password) };
 
@@ -56,7 +66,7 @@ export default function Login() {
   };
 
   return (
-    <AuthScreen title="Welcome back" subtitle="Log in to see your budget.">
+    <AuthScreen title="Welcome back" subtitle="Log in to sync your budget, or continue without an account.">
       {!!formError && <ErrorBanner message={formError} />}
 
       <Field
@@ -123,6 +133,18 @@ export default function Login() {
 
       <SocialButtons onPress={social} disabled={loading} />
 
+      <View style={s.guestSection}>
+        <Pressable
+          style={[s.guestButton, loading && { opacity: 0.6 }]}
+          onPress={enterAsGuest}
+          disabled={loading || enteringGuestMode}
+          accessibilityRole="button"
+        >
+          <Text style={s.guestButtonText}>Continue without an account</Text>
+        </Pressable>
+        <Text style={s.guestNote}>Your budget will be saved on this device.</Text>
+      </View>
+
       <View style={s.switchRow}>
         <Text style={s.muted}>New here?</Text>
         <Pressable onPress={() => router.push("/sign-up")} hitSlop={10} accessibilityRole="button">
@@ -141,5 +163,18 @@ const makeStyles = (C: Palette) =>
     link: { fontSize: 16, fontWeight: "700", color: C.ink },
     muted: { fontSize: 16, color: C.muted },
     helpText: { fontSize: 14, lineHeight: 20, color: C.muted },
+    guestSection: { alignItems: "center", gap: 8 },
+    guestButton: {
+      minHeight: 48,
+      width: "100%",
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: C.line,
+      backgroundColor: C.card,
+    },
+    guestButtonText: { fontSize: 16, fontWeight: "700", color: C.ink },
+    guestNote: { fontSize: 14, textAlign: "center", color: C.muted },
     switchRow: { flexDirection: "row", justifyContent: "center", gap: 6, marginTop: 4 },
   });

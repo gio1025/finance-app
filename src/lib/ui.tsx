@@ -134,11 +134,15 @@ export function groupByDay(entries: Entry[]) {
 
 export function SectionHeader({
   title,
+  titleFitsOneLine = false,
+  titleStyle,
   meta,
   actionLabel,
   onAction,
 }: {
   title: string;
+  titleFitsOneLine?: boolean;
+  titleStyle?: StyleProp<TextStyle>;
   meta?: string;
   actionLabel?: string;
   onAction?: () => void;
@@ -147,7 +151,13 @@ export function SectionHeader({
   const s = useMemo(() => makeStyles(C), [C]);
   return (
     <View style={s.sectionHead}>
-      <Text style={s.sectionTitle} accessibilityRole="header">
+      <Text
+        style={[s.sectionTitle, titleFitsOneLine && { flexShrink: 1 }, titleStyle]}
+        numberOfLines={titleFitsOneLine ? 1 : undefined}
+        adjustsFontSizeToFit={titleFitsOneLine}
+        minimumFontScale={titleFitsOneLine ? 0.55 : undefined}
+        accessibilityRole="header"
+      >
         {title}
       </Text>
       {actionLabel && onAction ? (

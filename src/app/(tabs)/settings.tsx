@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   FlatList,
@@ -10,10 +11,12 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import AccountCard from "../../lib/AccountCard";
+import { useAuth } from "../../lib/auth/AuthContext";
 import RecurringEntrySheet from "../../lib/RecurringEntrySheet";
 import {
   CURRENCIES,
@@ -25,9 +28,15 @@ import {
   showDate,
   useBudget
 } from "../../lib/budget";
-import type { Entry, RecurringFrequency, RecurringRule } from "../../lib/budget";
-import CategoriesRow from "../../lib/CategoriesRow";
+import type {
+  Entry,
+  RecurringFrequency,
+  RecurringRule,
+  SavedDescription,
+  SavedDescriptionType,
+} from "../../lib/budget";
 import SecurityCard from "../../lib/SecurityCard";
+import { NavItem, useNavigationPreferences } from "../../lib/navigationPreferences";
 import { SCREEN_INSET } from "../../lib/theme";
 import { PageHeader } from "../../lib/ui";
 
@@ -36,6 +45,12 @@ const THEMES = [
   { key: "light", label: "Light", icon: "sunny-outline" },
   { key: "dark", label: "Dark", icon: "moon-outline" },
 ] as const;
+const NAV_LABELS: Record<NavItem, string> = {
+  index: "Home",
+  transactions: "Activity",
+  add: "Add transaction",
+  settings: "Settings",
+};
 
 export default function Settings() {
   const {
@@ -53,13 +68,30 @@ export default function Settings() {
     addRecurringRule,
     updateRecurringRule,
     stopRecurringRule,
+    savedDescriptions,
+    addSavedDescription,
+    updateSavedDescription,
+    deleteSavedDescription,
     tagMap,
     money,
   } = useBudget();
   const s = useMemo(() => makeStyles(C), [C]);
+  const router = useRouter();
+  const { user, signOut } = useAuth();
+  const { order: navOrder, move: moveNavItem } = useNavigationPreferences();
+  const { width } = useWindowDimensions();
+  const desktop = Platform.OS === "web" && width >= 900;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [entryPickerOpen, setEntryPickerOpen] = useState(false);
+  const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
+  const [descriptionsOpen, setDescriptionsOpen] = useState(false);
+  const [navOrderOpen, setNavOrderOpen] = useState(false);
+  const [editingDescription, setEditingDescription] = useState<SavedDescription | null>(null);
+  const [descriptionName, setDescriptionName] = useState("");
+  const [descriptionError, setDescriptionError] = useState("");
+  const [descriptionType, setDescriptionType] = useState<SavedDescriptionType>("expense");
+  const [descriptionListType, setDescriptionListType] = useState<"income" | "expense">("expense");
   const [recurringEntry, setRecurringEntry] = useState<Entry | null>(null);
   const [editingRule, setEditingRule] = useState<RecurringRule | null>(null);
   const entriesWithoutSchedule = useMemo(
@@ -85,6 +117,50 @@ export default function Settings() {
   const closePicker = () => {
     setPickerOpen(false);
     setQuery("");
+  };
+
+  const beginAddDescription = () => {
+    setEditingDescription({ id: "", name: "", type: descriptionListType });
+    setDescriptionName("");
+    setDescriptionError("");
+    setDescriptionType(descriptionListType);
+  };
+
+  const beginEditDescription = (description: SavedDescription) => {
+    setEditingDescription(description);
+    setDescriptionName(description.name);
+    setDescriptionError("");
+    setDescriptionType(description.type);
+  };
+
+  const cancelDescriptionEdit = () => {
+    setEditingDescription(null);
+    setDescriptionName("");
+    setDescriptionError("");
+  };
+
+  const saveDescription = () => {
+    const name = descriptionName.trim();
+    if (!name) {
+      setDescriptionError("Enter a description.");
+      return;
+    }
+    if (
+      savedDescriptions.some(
+        (description) =>
+          description.id !== editingDescription?.id &&
+          description.name.toLocaleLowerCase() === name.toLocaleLowerCase() &&
+          (description.type === descriptionType ||
+            description.type === "both" ||
+            descriptionType === "both")
+      )
+    ) {
+      setDescriptionError("That saved description already exists.");
+      return;
+    }
+    if (editingDescription?.id) updateSavedDescription(editingDescription.id, name, descriptionType);
+    else addSavedDescription(name, descriptionType);
+    cancelDescriptionEdit();
   };
 
   const closeRecurringSheet = () => {
@@ -139,11 +215,11 @@ export default function Settings() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
-        contentContainerStyle={{
+        contentContainerStyle={[s.scroll, desktop && s.desktopScroll, {
           paddingHorizontal: SCREEN_INSET,
           paddingTop: 24,
           paddingBottom: 40,
-        }}
+        }]}
       >
         <PageHeader
           title="Settings"
@@ -151,6 +227,25 @@ export default function Settings() {
           style={s.pageHeader}
         />
         <AccountCard />
+        {!user && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Guest mode</Text>
+            <Text style={s.note}>Your budget is saved on this device. Log out to return to the welcome screen.</Text>
+            <Pressable
+              style={s.guestLogout}
+              onPress={() => confirmChange(
+                "Log out of guest mode?",
+                "Your budget will stay saved on this device. You can continue as a guest again any time.",
+                "Log out",
+                () => { void signOut(); }
+              )}
+              accessibilityRole="button"
+            >
+              <Ionicons name="log-out-outline" size={19} color={C.ink} />
+              <Text style={s.guestLogoutText}>Log out</Text>
+            </Pressable>
+          </View>
+        )}
 
         <View style={s.card}>
           <Text style={s.cardTitle}>Appearance</Text>
@@ -173,6 +268,32 @@ export default function Settings() {
           </View>
         </View>
 
+        <Pressable
+          style={s.manageRow}
+          onPress={() => setDescriptionsOpen(true)}
+          accessibilityRole="button"
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={s.cardTitle}>Saved descriptions</Text>
+            <Text style={s.note}>
+            {savedDescriptions.length} saved · Separate suggestions for income and expenses.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={C.muted} />
+        </Pressable>
+
+        <Pressable
+          style={s.manageRow}
+          onPress={() => setNavOrderOpen(true)}
+          accessibilityRole="button"
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={s.cardTitle}>Navigation order</Text>
+            <Text style={s.note}>Choose the order of tabs on your device.</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={C.muted} />
+        </Pressable>
+
         <View style={s.card}>
           <Text style={s.cardTitle}>Currency</Text>
           <Pressable
@@ -192,7 +313,6 @@ export default function Settings() {
           </Pressable>
         </View>
 
-        <CategoriesRow />
         <SecurityCard />
 
         <View style={s.card}>
@@ -200,12 +320,21 @@ export default function Settings() {
             <Text style={s.cardTitle}>Recurring transactions</Text>
             <Pressable
               style={s.addSchedule}
-              onPress={() => setEntryPickerOpen(true)}
+              onPress={() =>
+                recurringRules.length > 0
+                  ? setSchedulePickerOpen(true)
+                  : setEntryPickerOpen(true)
+              }
               accessibilityRole="button"
-              disabled={entriesWithoutSchedule.length === 0}
+              accessibilityLabel={recurringRules.length > 0 ? "Edit recurring transaction" : "Add recurring transaction"}
+              disabled={recurringRules.length === 0 && entriesWithoutSchedule.length === 0}
             >
-              <Ionicons name="add" size={18} color={C.onAccent} />
-              <Text style={s.addScheduleText}>Add</Text>
+              <Ionicons
+                name={recurringRules.length > 0 ? "create-outline" : "add"}
+                size={18}
+                color={C.onAccent}
+              />
+              <Text style={s.addScheduleText}>{recurringRules.length > 0 ? "Edit" : "Add"}</Text>
             </Pressable>
           </View>
           {recurringRules.length === 0 ? (
@@ -294,7 +423,86 @@ export default function Settings() {
             <Text style={s.dangerText}>Delete all budget data</Text>
           </Pressable>
         </View>
+
+        <Pressable
+          style={s.manageRow}
+          onPress={() => router.push("/about")}
+          accessibilityRole="button"
+        >
+          <View style={s.aboutRowIcon}>
+            <Ionicons name="information-circle-outline" size={22} color={C.accent} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.cardTitle}>About</Text>
+            <Text style={s.note}>App details, links, and privacy.</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={C.muted} />
+        </Pressable>
       </ScrollView>
+
+      <Modal
+        visible={navOrderOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setNavOrderOpen(false)}
+      >
+        <Pressable style={s.backdrop} onPress={() => setNavOrderOpen(false)}>
+          <Pressable style={s.entryPickerSheet} onPress={() => {}}>
+            <View style={s.grabber} />
+            <View style={s.sheetHead}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.sheetTitle}>Navigation order</Text>
+                <Text style={s.descriptionSubtitle}>Choose the order of tabs on your device.</Text>
+              </View>
+              <Pressable
+                onPress={() => setNavOrderOpen(false)}
+                hitSlop={12}
+                accessibilityLabel="Close navigation order"
+              >
+                <Ionicons name="close" size={26} color={C.muted} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={s.navOrderSheetList}>
+              {navOrder.map((item, index) => (
+                <View key={item} style={s.navOrderRow}>
+                  <Text style={s.navOrderName}>{index + 1}. {NAV_LABELS[item]}</Text>
+                  <View style={s.navOrderActions}>
+                    <Pressable
+                      style={[s.navMoveButton, index === 0 && s.navMoveDisabled]}
+                      onPress={() => moveNavItem(item, -1)}
+                      disabled={index === 0}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Move ${NAV_LABELS[item]} earlier`}
+                    >
+                      <Ionicons
+                        name="chevron-up"
+                        size={20}
+                        color={index === 0 ? C.muted : C.ink}
+                      />
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        s.navMoveButton,
+                        index === navOrder.length - 1 && s.navMoveDisabled,
+                      ]}
+                      onPress={() => moveNavItem(item, 1)}
+                      disabled={index === navOrder.length - 1}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Move ${NAV_LABELS[item]} later`}
+                    >
+                      <Ionicons
+                        name="chevron-down"
+                        size={20}
+                        color={index === navOrder.length - 1 ? C.muted : C.ink}
+                      />
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal
         visible={pickerOpen}
@@ -376,6 +584,262 @@ export default function Settings() {
         </KeyboardAvoidingView>
       </Modal>
       <Modal
+        visible={descriptionsOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          setDescriptionsOpen(false);
+          cancelDescriptionEdit();
+        }}
+      >
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <Pressable
+            style={s.backdrop}
+            onPress={() => {
+              setDescriptionsOpen(false);
+              cancelDescriptionEdit();
+            }}
+          >
+            <Pressable style={s.descriptionSheet} onPress={() => {}}>
+              <View style={s.grabber} />
+              <View style={s.sheetHead}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.sheetTitle}>Saved descriptions</Text>
+                  <Text style={s.descriptionSubtitle}>
+                    Reusable suggestions for new transactions.
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    setDescriptionsOpen(false);
+                    cancelDescriptionEdit();
+                  }}
+                  hitSlop={12}
+                  accessibilityLabel="Close saved descriptions"
+                >
+                  <Ionicons name="close" size={26} color={C.muted} />
+                </Pressable>
+              </View>
+              {editingDescription ? (
+                <View style={s.descriptionEditor}>
+                  <Text style={s.descriptionEditorTitle}>
+                    {editingDescription.id ? "Edit description" : "New description"}
+                  </Text>
+                  <View style={s.segment}>
+                    {(
+                      [
+                        { value: "expense", label: "Expense" },
+                        { value: "income", label: "Income" },
+                        ...(editingDescription.id && editingDescription.type === "both"
+                          ? [{ value: "both" as const, label: "Both" }]
+                          : []),
+                      ] as { value: SavedDescriptionType; label: string }[]
+                    ).map((option) => {
+                      const selected = descriptionType === option.value;
+                      return (
+                        <Pressable
+                          key={option.value}
+                          style={[s.segBtn, selected && s.segBtnActive]}
+                          onPress={() => setDescriptionType(option.value)}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected }}
+                        >
+                          <Text style={[s.segText, selected && { color: C.onInk }]}>
+                            {option.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <TextInput
+                    style={s.descriptionInput}
+                    value={descriptionName}
+                    onChangeText={(value) => {
+                      setDescriptionName(value);
+                      setDescriptionError("");
+                    }}
+                    placeholder="e.g. Coffee"
+                    placeholderTextColor={C.muted}
+                    keyboardAppearance={isDark ? "dark" : "light"}
+                    maxLength={60}
+                    autoFocus
+                    returnKeyType="done"
+                    onSubmitEditing={saveDescription}
+                    accessibilityLabel="Saved description"
+                  />
+                  {!!descriptionError && (
+                    <Text style={s.descriptionError}>{descriptionError}</Text>
+                  )}
+                  <View style={s.descriptionActions}>
+                    <Pressable
+                      style={s.descriptionCancel}
+                      onPress={cancelDescriptionEdit}
+                      accessibilityRole="button"
+                    >
+                      <Text style={s.descriptionCancelText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      style={s.descriptionSave}
+                      onPress={saveDescription}
+                      accessibilityRole="button"
+                    >
+                      <Text style={s.descriptionSaveText}>Save</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <Pressable
+                  style={s.descriptionAdd}
+                  onPress={beginAddDescription}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="add" size={20} color={C.onAccent} />
+                  <Text style={s.descriptionAddText}>Add description</Text>
+                </Pressable>
+              )}
+              <View style={s.segment}>
+                {(["expense", "income"] as const).map((kind) => {
+                  const selected = descriptionListType === kind;
+                  return (
+                    <Pressable
+                      key={kind}
+                      style={[s.segBtn, selected && s.segBtnActive]}
+                      onPress={() => {
+                        setDescriptionListType(kind);
+                        if (!editingDescription) setDescriptionType(kind);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                    >
+                      <Text style={[s.segText, selected && { color: C.onInk }]}>
+                        {kind === "expense" ? "Expenses" : "Income"}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <ScrollView
+                style={s.descriptionList}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {savedDescriptions.filter(
+                  (description) =>
+                    description.type === descriptionListType || description.type === "both"
+                ).length === 0 ? (
+                  <Text style={s.descriptionEmpty}>
+                    No saved {descriptionListType} descriptions yet. Add one to get started.
+                  </Text>
+                ) : (
+                  savedDescriptions
+                    .filter(
+                      (description) =>
+                        description.type === descriptionListType || description.type === "both"
+                    )
+                    .map((description) => (
+                    <View key={description.id} style={s.descriptionRow}>
+                      <Text style={s.descriptionName} numberOfLines={2}>
+                        {description.name}
+                      </Text>
+                      <Pressable
+                        style={s.descriptionIcon}
+                        onPress={() => beginEditDescription(description)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Edit ${description.name}`}
+                      >
+                        <Ionicons name="create-outline" size={20} color={C.accent} />
+                      </Pressable>
+                      <Pressable
+                        style={s.descriptionIcon}
+                        onPress={() =>
+                          confirmAction(
+                            "Delete saved description?",
+                            `“${description.name}” will no longer appear as a suggestion. Existing transactions won't change.`,
+                            "Delete",
+                            () => deleteSavedDescription(description.id)
+                          )
+                        }
+                        accessibilityRole="button"
+                        accessibilityLabel={`Delete ${description.name}`}
+                      >
+                        <Ionicons name="trash-outline" size={20} color={C.expense} />
+                      </Pressable>
+                    </View>
+                    ))
+                )}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </KeyboardAvoidingView>
+      </Modal>
+      <Modal
+        visible={schedulePickerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSchedulePickerOpen(false)}
+      >
+        <Pressable
+          style={s.entryPickerBackdrop}
+          onPress={() => setSchedulePickerOpen(false)}
+        >
+          <Pressable style={s.entryPickerSheet} onPress={() => {}}>
+            <View style={s.grabber} />
+            <View style={s.sheetHead}>
+              <Text style={s.sheetTitle}>Choose a schedule to edit</Text>
+              <Pressable
+                onPress={() => setSchedulePickerOpen(false)}
+                hitSlop={12}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={26} color={C.muted} />
+              </Pressable>
+            </View>
+            <ScrollView>
+              {recurringRules.map((rule) => (
+                <Pressable
+                  key={rule.id}
+                  style={s.entryChoice}
+                  onPress={() => {
+                    setSchedulePickerOpen(false);
+                    startEditingRule(rule);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Edit ${rule.title || "recurring transaction"}`}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.recurringTitle} numberOfLines={1}>
+                      {rule.title.trim() ||
+                        (rule.tagId ? tagMap.get(rule.tagId)?.name : undefined) ||
+                        (rule.type === "income" ? "Income" : "Expense")}
+                    </Text>
+                    <Text style={s.recurringDetail}>
+                      {rule.frequency} · Next {showDate(rule.nextDate)}
+                    </Text>
+                  </View>
+                  <Text style={s.entryAmount}>{money(rule.amount)}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            {entriesWithoutSchedule.length > 0 && (
+              <Pressable
+                style={s.addAnotherSchedule}
+                onPress={() => {
+                  setSchedulePickerOpen(false);
+                  setEntryPickerOpen(true);
+                }}
+                accessibilityRole="button"
+              >
+                <Ionicons name="add" size={18} color={C.accent} />
+                <Text style={s.addAnotherScheduleText}>Add another recurring transaction</Text>
+              </Pressable>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+      <Modal
         visible={entryPickerOpen}
         transparent
         animationType="slide"
@@ -455,6 +919,8 @@ const makeStyles = (C: Palette) => {
   };
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: C.bg },
+    scroll: { width: "100%" },
+    desktopScroll: { maxWidth: 880, alignSelf: "center" },
     pageHeader: { marginBottom: 20 },
     card: {
       backgroundColor: C.card,
@@ -468,6 +934,56 @@ const makeStyles = (C: Palette) => {
     },
     cardTitle: { fontSize: 17, fontWeight: "700", color: C.ink },
     note: { fontSize: 15, color: C.muted, lineHeight: 22 },
+    guestLogout: {
+      minHeight: 48,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      borderRadius: 14,
+      backgroundColor: C.highlight,
+    },
+    guestLogoutText: { color: C.ink, fontSize: 15, fontWeight: "700" },
+    manageRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      backgroundColor: C.card,
+      borderRadius: 20,
+      padding: 18,
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: C.line,
+      ...shadow,
+    },
+    aboutRowIcon: {
+      width: 40,
+      height: 40,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 12,
+      backgroundColor: C.highlight,
+    },
+    navOrderRow: {
+      minHeight: 48,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: C.line,
+    },
+    navOrderSheetList: { paddingHorizontal: 20, paddingBottom: 16 },
+    navOrderName: { flex: 1, fontSize: 15, color: C.ink, fontWeight: "500" },
+    navOrderActions: { flexDirection: "row", gap: 4 },
+    navMoveButton: {
+      width: 40,
+      height: 40,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 10,
+      backgroundColor: C.bg,
+    },
+    navMoveDisabled: { opacity: 0.45 },
     recurringHeading: {
       flexDirection: "row",
       alignItems: "center",
@@ -524,6 +1040,17 @@ const makeStyles = (C: Palette) => {
       borderTopWidth: 1,
       borderTopColor: C.line,
     },
+    addAnotherSchedule: {
+      minHeight: 48,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      marginTop: 8,
+      borderTopWidth: 1,
+      borderTopColor: C.line,
+    },
+    addAnotherScheduleText: { fontSize: 14, fontWeight: "600", color: C.accent },
     entryAmount: { fontSize: 15, fontWeight: "600", color: C.ink },
     syncAction: {
       minHeight: 44,
@@ -601,6 +1128,73 @@ const makeStyles = (C: Palette) => {
       borderColor: C.line,
       paddingBottom: 20,
     },
+    descriptionSheet: {
+      height: "72%",
+      backgroundColor: C.card,
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      borderTopWidth: 1,
+      borderColor: C.line,
+      paddingBottom: 20,
+    },
+    descriptionSubtitle: { marginTop: 3, fontSize: 13, color: C.muted },
+    descriptionAdd: {
+      minHeight: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      marginHorizontal: 20,
+      marginBottom: 12,
+      borderRadius: 12,
+      backgroundColor: C.accent,
+    },
+    descriptionAddText: { color: C.onAccent, fontSize: 14, fontWeight: "700" },
+    descriptionEditor: {
+      gap: 10,
+      marginHorizontal: 20,
+      marginBottom: 12,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: C.line,
+      borderRadius: 14,
+      backgroundColor: C.bg,
+    },
+    descriptionEditorTitle: { fontSize: 15, fontWeight: "700", color: C.ink },
+    descriptionInput: {
+      minHeight: 46,
+      paddingHorizontal: 12,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: C.line,
+      color: C.ink,
+      backgroundColor: C.card,
+      fontSize: 15,
+    },
+    descriptionError: { color: C.expense, fontSize: 13 },
+    descriptionActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
+    descriptionCancel: { minHeight: 40, justifyContent: "center", paddingHorizontal: 14 },
+    descriptionCancelText: { color: C.muted, fontWeight: "600" },
+    descriptionSave: {
+      minHeight: 40,
+      justifyContent: "center",
+      paddingHorizontal: 18,
+      borderRadius: 10,
+      backgroundColor: C.accent,
+    },
+    descriptionSaveText: { color: C.onAccent, fontWeight: "700" },
+    descriptionList: { paddingHorizontal: 20 },
+    descriptionEmpty: { paddingVertical: 18, color: C.muted, fontSize: 14, textAlign: "center" },
+    descriptionRow: {
+      minHeight: 56,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: C.line,
+    },
+    descriptionName: { flex: 1, fontSize: 15, fontWeight: "500", color: C.ink },
+    descriptionIcon: { width: 40, height: 44, alignItems: "center", justifyContent: "center" },
     grabber: {
       alignSelf: "center",
       width: 40,

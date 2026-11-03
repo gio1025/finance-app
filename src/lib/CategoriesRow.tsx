@@ -25,7 +25,7 @@ export default function CategoriesRow() {
       <View style={{ flex: 1 }}>
         <Text style={s.title}>Categories</Text>
         <Text style={s.sub}>
-          {expense} expense · {income} income
+          {expense} expense · {income} income · older transactions
         </Text>
       </View>
       <Ionicons name="chevron-forward" size={20} color={C.muted} />

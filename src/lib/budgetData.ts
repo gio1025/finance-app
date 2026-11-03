@@ -1,10 +1,11 @@
-import type { Entry, RecurringRule, Tag } from "./budget";
+import type { Entry, RecurringRule, SavedDescription, Tag } from "./budget";
 import { isSupabaseConfigured, supabase } from "./supabase";
 
 export type BudgetSnapshot = {
   entries: Entry[];
   recurringRules: RecurringRule[];
   tags: Tag[];
+  savedDescriptions: SavedDescription[];
   currency: string;
 };
 
@@ -17,7 +18,7 @@ function requireSupabase() {
 
 async function replaceRows(
   userId: string,
-  table: "budget_entries" | "budget_tags" | "budget_recurring",
+  table: "budget_entries" | "budget_tags" | "budget_recurring" | "budget_descriptions",
   rows: Record<string, string | number | null>[]
 ) {
   const client = requireSupabase();
@@ -88,6 +89,16 @@ async function writeRows(userId: string, snapshot: BudgetSnapshot) {
       kind: tag.kind,
     }))
   );
+  await replaceRows(
+    userId,
+    "budget_descriptions",
+    snapshot.savedDescriptions.map((description) => ({
+      id: description.id,
+      user_id: userId,
+      name: description.name,
+      description_type: description.type,
+    }))
+  );
 }
 
 export async function syncBudgetData(userId: string, snapshot: BudgetSnapshot) {
@@ -124,7 +135,7 @@ export async function loadBudgetData(
     return localSnapshot;
   }
 
-  const [entryResult, tagResult, recurringResult] = await Promise.all([
+  const [entryResult, tagResult, recurringResult, descriptionResult] = await Promise.all([
     client
       .from("budget_entries")
       .select("id,type,title,amount,created_at,date,time,tag_id,recurring_id")
@@ -136,10 +147,15 @@ export async function loadBudgetData(
         "id,source_entry_id,type,title,amount,tag_id,time,frequency,start_date,next_date,end_date"
       )
       .eq("user_id", userId),
+    client
+      .from("budget_descriptions")
+      .select("id,name,description_type")
+      .eq("user_id", userId),
   ]);
   if (entryResult.error) throw entryResult.error;
   if (tagResult.error) throw tagResult.error;
   if (recurringResult.error) throw recurringResult.error;
+  if (descriptionResult.error) throw descriptionResult.error;
 
   return {
     currency: settings.currency,
@@ -172,6 +188,11 @@ export async function loadBudgetData(
       name: row.name,
       color: row.color,
       kind: row.kind,
+    })),
+    savedDescriptions: (descriptionResult.data ?? []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      type: row.description_type ?? "both",
     })),
   };
 }

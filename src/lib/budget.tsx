@@ -59,6 +59,8 @@ export type Tag = {
   kind: "income" | "expense";
 };
 export type TagInput = Omit<Tag, "id">;
+export type SavedDescriptionType = Entry["type"] | "both";
+export type SavedDescription = { id: string; name: string; type: SavedDescriptionType };
 
 function mergeBudgetSnapshots(
   local: BudgetSnapshot,
@@ -86,6 +88,21 @@ function mergeBudgetSnapshots(
     }
   }
 
+  const descriptionsById = new Map(
+    remote.savedDescriptions.map((description) => [description.id, description])
+  );
+  for (const description of local.savedDescriptions) {
+    descriptionsById.set(description.id, description);
+  }
+  const mergedDescriptions: SavedDescription[] = [];
+  const descriptionNames = new Set<string>();
+  for (const description of descriptionsById.values()) {
+    const key = `${description.type}:${description.name.trim().toLocaleLowerCase()}`;
+    if (descriptionNames.has(key)) continue;
+    descriptionNames.add(key);
+    mergedDescriptions.push(description);
+  }
+
   return {
     entries: mergeById(remote.entries, local.entries).map((entry) => ({
       ...entry,
@@ -96,6 +113,7 @@ function mergeBudgetSnapshots(
       tagId: rule.tagId ? localTagIds.get(rule.tagId) ?? rule.tagId : undefined,
     })),
     tags: mergedTags,
+    savedDescriptions: mergedDescriptions,
     currency: remote.currency,
   };
 }
@@ -109,6 +127,7 @@ let ENTRIES_KEY = "budget-entries-v1";
 let CURRENCY_KEY = "budget-currency-v1";
 let TAGS_KEY = "budget-tags-v1";
 let RECURRING_KEY = "budget-recurring-v1";
+let DESCRIPTIONS_KEY = "budget-descriptions-v1";
 const THEME_KEY = "budget-theme-v1";
 const LEGACY_ADOPTED_KEY = "budget-legacy-adopted-v1";
 
@@ -118,6 +137,7 @@ export function setDataScope(id: string) {
   CURRENCY_KEY = `budget-currency-v1${suffix}`;
   TAGS_KEY = `budget-tags-v1${suffix}`;
   RECURRING_KEY = `budget-recurring-v1${suffix}`;
+  DESCRIPTIONS_KEY = `budget-descriptions-v1${suffix}`;
 }
 
 // Semantic color tokens. Components read these names (via useBudget().colors).
@@ -368,10 +388,14 @@ type BudgetContextValue = {
   sorted: Entry[];
   totals: { income: number; expense: number; balance: number };
   tags: Tag[];
+  savedDescriptions: SavedDescription[];
   tagMap: Map<string, Tag>;
   addTag: (input: TagInput) => void;
   updateTag: (id: string, input: TagInput) => void;
   deleteTag: (id: string) => void;
+  addSavedDescription: (name: string, type: SavedDescriptionType) => void;
+  updateSavedDescription: (id: string, name: string, type: SavedDescriptionType) => void;
+  deleteSavedDescription: (id: string) => void;
   currency: string; // currency code, e.g. "USD"
   setCurrency: (code: string) => void;
   symbol: string; // short symbol, e.g. "$"
@@ -414,6 +438,7 @@ export function BudgetProvider({
   const [entries, setEntries] = useState<Entry[]>([]);
   const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
+  const [savedDescriptions, setSavedDescriptions] = useState<SavedDescription[]>([]);
   const [currency, setCurrency] = useState("USD");
   const [theme, setTheme] = useState<ThemeChoice>("system");
   const [loaded, setLoaded] = useState(false);
@@ -425,7 +450,7 @@ export function BudgetProvider({
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
   const retryingSync = useRef(false);
-  const snapshotRef = useRef<BudgetSnapshot>({ entries, recurringRules, tags, currency });
+  const snapshotRef = useRef<BudgetSnapshot>({ entries, recurringRules, tags, savedDescriptions, currency });
   const system = useColorScheme();
 
   const isDark = theme === "dark" || (theme === "system" && system === "dark");
@@ -445,6 +470,7 @@ export function BudgetProvider({
               "budget-currency-v1",
               "budget-tags-v1",
               "budget-recurring-v1",
+              "budget-descriptions-v1",
             ]) {
               const legacyValue = await AsyncStorage.getItem(key);
               if (legacyValue !== null) {
@@ -456,12 +482,13 @@ export function BudgetProvider({
           }
         }
 
-        const [rawEntries, rawCurrency, rawTheme, rawTags, rawRecurringRules] = await Promise.all([
+        const [rawEntries, rawCurrency, rawTheme, rawTags, rawRecurringRules, rawDescriptions] = await Promise.all([
           AsyncStorage.getItem(ENTRIES_KEY),
           AsyncStorage.getItem(CURRENCY_KEY),
           AsyncStorage.getItem(THEME_KEY),
           AsyncStorage.getItem(TAGS_KEY),
           AsyncStorage.getItem(RECURRING_KEY),
+          AsyncStorage.getItem(DESCRIPTIONS_KEY),
         ]);
         const localEntries: Entry[] = rawEntries ? JSON.parse(rawEntries) : [];
         const localRecurringRules: RecurringRule[] = rawRecurringRules
@@ -470,6 +497,20 @@ export function BudgetProvider({
         const localTags: Tag[] = rawTags
           ? JSON.parse(rawTags)
           : SUGGESTED_TAGS.filter((tag) => DEFAULT_TAG_NAMES.includes(tag.name)).map(makeTag);
+        const localDescriptions: SavedDescription[] = rawDescriptions
+          ? (JSON.parse(rawDescriptions) as { id: string; name: string; type?: string }[]).map(
+              (description) => ({
+                id: description.id,
+                name: description.name,
+                type:
+                  description.type === "income" ||
+                  description.type === "expense" ||
+                  description.type === "both"
+                    ? description.type
+                    : "both",
+              })
+            )
+          : [];
         const foundCurrency = CURRENCIES.find(
           (item) => item.code === rawCurrency || item.symbol === rawCurrency
         );
@@ -481,6 +522,7 @@ export function BudgetProvider({
           })),
           recurringRules: localRecurringRules,
           tags: localTags,
+          savedDescriptions: localDescriptions,
           currency: foundCurrency?.code ?? "USD",
         };
         let snapshot: BudgetSnapshot = rawSnapshot;
@@ -515,6 +557,7 @@ export function BudgetProvider({
         );
         setRecurringRules(caughtUp.rules);
         setTags(snapshot.tags);
+        setSavedDescriptions(snapshot.savedDescriptions ?? []);
         setCurrency(snapshot.currency);
         if (rawTheme === "system" || rawTheme === "light" || rawTheme === "dark") {
           setTheme(rawTheme);
@@ -534,8 +577,8 @@ export function BudgetProvider({
   }, [userId]);
 
   useEffect(() => {
-    snapshotRef.current = { entries, recurringRules, tags, currency };
-  }, [entries, recurringRules, tags, currency]);
+    snapshotRef.current = { entries, recurringRules, tags, savedDescriptions, currency };
+  }, [entries, recurringRules, tags, savedDescriptions, currency]);
 
   const queueSync = useCallback(
     (snapshot: BudgetSnapshot) => {
@@ -560,6 +603,7 @@ export function BudgetProvider({
       setEntries(merged.entries);
       setRecurringRules(merged.recurringRules);
       setTags(merged.tags);
+      setSavedDescriptions(merged.savedDescriptions);
       setCurrency(merged.currency);
       setRemoteReady(true);
       await queueSync(merged);
@@ -590,12 +634,20 @@ export function BudgetProvider({
   }, [tags, loaded]);
 
   useEffect(() => {
+    if (loaded) {
+      AsyncStorage.setItem(DESCRIPTIONS_KEY, JSON.stringify(savedDescriptions)).catch((error: unknown) => {
+        console.warn("Unable to save descriptions on this device.", error);
+      });
+    }
+  }, [savedDescriptions, loaded]);
+
+  useEffect(() => {
     if (loaded) AsyncStorage.setItem(CURRENCY_KEY, currency).catch(() => {});
   }, [currency, loaded]);
 
   useEffect(() => {
     if (!loaded || !remoteReady || !userId) return;
-    const snapshot = { entries, recurringRules, tags, currency };
+    const snapshot = { entries, recurringRules, tags, savedDescriptions, currency };
     void queueSync(snapshot)
       .then(() => setSyncStatus("synced"))
       .catch((error: unknown) => {
@@ -604,7 +656,7 @@ export function BudgetProvider({
         // The local write has already completed. Do not interrupt the user with a
         // modal for a recoverable network/cloud-sync failure.
       });
-  }, [entries, recurringRules, tags, currency, loaded, remoteReady, userId, queueSync]);
+  }, [entries, recurringRules, tags, savedDescriptions, currency, loaded, remoteReady, userId, queueSync]);
 
   const processDueRecurrences = useCallback(() => {
     const result = materializeDueEntries(recurringRules, entries, toDateStr(new Date()));
@@ -855,6 +907,42 @@ export function BudgetProvider({
     );
   }, []);
 
+  const addSavedDescription = useCallback((name: string, type: SavedDescriptionType) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSavedDescriptions((list) =>
+      list.some(
+        (item) =>
+          item.name.toLocaleLowerCase() === trimmed.toLocaleLowerCase() &&
+          (item.type === type || item.type === "both" || type === "both")
+      )
+        ? list
+        : [...list, { id: `d${newId()}`, name: trimmed, type }]
+    );
+  }, []);
+
+  const updateSavedDescription = useCallback((id: string, name: string, type: SavedDescriptionType) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSavedDescriptions((list) =>
+      list.map((item) =>
+        item.id === id &&
+        !list.some(
+          (other) =>
+            other.id !== id &&
+            other.name.toLocaleLowerCase() === trimmed.toLocaleLowerCase() &&
+            (other.type === type || other.type === "both" || type === "both")
+        )
+          ? { ...item, name: trimmed, type }
+          : item
+      )
+    );
+  }, []);
+
+  const deleteSavedDescription = useCallback((id: string) => {
+    setSavedDescriptions((list) => list.filter((item) => item.id !== id));
+  }, []);
+
   const value = useMemo<BudgetContextValue>(
     () => ({
       loaded,
@@ -865,10 +953,14 @@ export function BudgetProvider({
       sorted,
       totals,
       tags,
+      savedDescriptions,
       tagMap,
       addTag,
       updateTag,
       deleteTag,
+      addSavedDescription,
+      updateSavedDescription,
+      deleteSavedDescription,
       currency,
       setCurrency,
       symbol,
@@ -897,10 +989,14 @@ export function BudgetProvider({
       sorted,
       totals,
       tags,
+      savedDescriptions,
       tagMap,
       addTag,
       updateTag,
       deleteTag,
+      addSavedDescription,
+      updateSavedDescription,
+      deleteSavedDescription,
       currency,
       symbol,
       theme,

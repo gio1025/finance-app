@@ -43,10 +43,10 @@ function EntryRow({ item, tag, C, money, spoken, recurrence, onMenu }: Props) {
   const s = getStyles(C);
   const isIncome = item.type === "income";
   const hasTitle = item.title.trim().length > 0;
-  const label = hasTitle ? item.title.trim() : tag?.name ?? (isIncome ? "Income" : "Expense");
-  // Category and time. (The day comes from the day header.)
+  const label = hasTitle
+    ? [item.title.trim(), tag?.name].filter(Boolean).join(" · ")
+    : tag?.name ?? (isIncome ? "Income" : "Expense");
   const sub = [
-    tag && hasTitle ? tag.name : null,
     item.time ? showTime(item.time) : null,
     recurrence ? `Repeats ${recurrence}` : null,
   ]
@@ -77,7 +77,7 @@ function EntryRow({ item, tag, C, money, spoken, recurrence, onMenu }: Props) {
             </Text>
             {!!sub && <Text style={s.meta}>{sub}</Text>}
           </View>
-          <Text style={s.amount} numberOfLines={1}>
+          <Text style={[s.amount, { color: isIncome ? C.positive : C.negative }]} numberOfLines={1}>
             {sign}
             {money(item.amount)}
           </Text>

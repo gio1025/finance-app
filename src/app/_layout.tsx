@@ -27,7 +27,8 @@ function Root() {
   const { isDark, colors, loaded } = useBudget();
   const { ready } = useLock();
   const { status } = useAuth();
-  const signedIn = status === "signedIn";
+  const authenticated = status === "signedIn";
+  const canUseApp = authenticated || status === "guest";
   const all = loaded && ready;
   const shown = useRef(false);
 
@@ -48,14 +49,16 @@ function Root() {
         screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}
       >
         {/* PROTECTED: only reachable while logged in */}
-        <Stack.Protected guard={signedIn}>
+        <Stack.Protected guard={canUseApp}>
           <Stack.Screen name="(tabs)" options={{ animation: "fade" }} />
+          <Stack.Screen name="about" options={{ presentation: "modal" }} />
           <Stack.Screen name="categories" options={{ presentation: "modal" }} />
+          <Stack.Screen name="descriptions" options={{ presentation: "modal" }} />
           <Stack.Screen name="pin" options={{ presentation: "modal" }} />
         </Stack.Protected>
 
         {/* PUBLIC: only reachable while logged out */}
-        <Stack.Protected guard={!signedIn}>
+        <Stack.Protected guard={!authenticated}>
           <Stack.Screen name="login" options={{ animation: "fade" }} />
           <Stack.Screen name="sign-up" options={{ animation: "slide_from_right" }} />
           <Stack.Screen name="forgot-password" options={{ animation: "slide_from_right" }} />

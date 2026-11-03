@@ -58,7 +58,15 @@ function Sheet({
 
 /* ---------- date ---------- */
 
-export function DateField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function DateField({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  compact?: boolean;
+}) {
   const { colors: C } = useBudget();
   const s = useMemo(() => makeStyles(C), [C]);
   const [open, setOpen] = useState(false);
@@ -104,15 +112,15 @@ export function DateField({ value, onChange }: { value: string; onChange: (v: st
   return (
     <>
       <Pressable
-        style={s.field}
+        style={[s.field, compact && s.compactField]}
         onPress={openPicker}
         accessibilityRole="button"
         accessibilityLabel={`Choose date, currently ${valid ? showDate(value) : "none"}`}
       >
-        <Text style={[s.fieldText, !valid && { color: C.muted }]} numberOfLines={1}>
+        <Text style={[s.fieldText, compact && s.compactFieldText, !valid && { color: C.muted }]} numberOfLines={1}>
           {valid ? showDate(value) : "Select date"}
         </Text>
-        <Ionicons name="calendar-outline" size={20} color={C.muted} />
+        <Ionicons name="calendar-outline" size={compact ? 17 : 20} color={C.muted} />
       </Pressable>
 
       <Sheet visible={open} onClose={() => setOpen(false)} title="Select date" C={C} s={s}>
@@ -375,6 +383,8 @@ const makeStyles = (C: Palette) =>
       paddingHorizontal: 16,
       minHeight: 52,
     },
+    compactField: { flex: 1, minWidth: 0, minHeight: 44, gap: 4, paddingHorizontal: 8 },
+    compactFieldText: { fontSize: 13 },
     fieldText: { flex: 1, fontSize: 17, color: C.ink, fontVariant: ["tabular-nums"] },
 
     // sheet

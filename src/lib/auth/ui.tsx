@@ -11,6 +11,7 @@ import {
     Text,
     TextInput,
     TextInputProps,
+    useWindowDimensions,
     View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -36,6 +37,8 @@ export function AuthScreen({
 }) {
   const { colors: C } = useBudget();
   const s = useMemo(() => makeStyles(C), [C]);
+  const { width } = useWindowDimensions();
+  const desktop = Platform.OS === "web" && width >= 768;
   return (
     <SafeAreaView style={s.screen}>
       <KeyboardAvoidingView
@@ -45,22 +48,24 @@ export function AuthScreen({
         <ScrollView
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={s.scroll}
+          contentContainerStyle={[s.scroll, desktop && s.desktopScroll]}
         >
-          {onBack && (
-            <Pressable onPress={onBack} style={s.back} hitSlop={10} accessibilityRole="button">
-              <Ionicons name="chevron-back" size={24} color={C.ink} />
-              <Text style={s.backText}>{backLabel ?? "Back"}</Text>
-            </Pressable>
-          )}
-          <View style={s.brand}>
-            <BrandLockup markSize={56} />
+          <View style={[s.content, desktop && s.desktopContent]}>
+            {onBack && (
+              <Pressable onPress={onBack} style={s.back} hitSlop={10} accessibilityRole="button">
+                <Ionicons name="chevron-back" size={24} color={C.ink} />
+                <Text style={s.backText}>{backLabel ?? "Back"}</Text>
+              </Pressable>
+            )}
+            <View style={s.brand}>
+              <BrandLockup markSize={56} />
+            </View>
+            <Text style={s.title} accessibilityRole="header">
+              {title}
+            </Text>
+            {!!subtitle && <Text style={s.subtitle}>{subtitle}</Text>}
+            <View style={s.body}>{children}</View>
           </View>
-          <Text style={s.title} accessibilityRole="header">
-            {title}
-          </Text>
-          {!!subtitle && <Text style={s.subtitle}>{subtitle}</Text>}
-          <View style={s.body}>{children}</View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -267,10 +272,21 @@ const makeStyles = (C: Palette) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: C.bg },
     scroll: { padding: 24, paddingBottom: 48, flexGrow: 1 },
+    desktopScroll: { justifyContent: "center" },
+    content: { width: "100%" },
+    desktopContent: {
+      maxWidth: 520,
+      alignSelf: "center",
+      backgroundColor: C.card,
+      borderRadius: 24,
+      borderWidth: 1,
+      borderColor: C.line,
+      padding: 32,
+    },
     back: { flexDirection: "row", alignItems: "center", marginLeft: -6, marginBottom: 16, alignSelf: "flex-start" },
     backText: { fontSize: 17, color: C.ink, fontWeight: "600" },
     brand: { marginBottom: 24 },
-    title: { fontSize: 34, fontWeight: "800", color: C.ink, letterSpacing: -0.6 },
+    title: { fontSize: 32, fontWeight: "800", color: C.ink, letterSpacing: -0.6 },
     subtitle: { fontSize: 17, color: C.muted, marginTop: 6, lineHeight: 24 },
     body: { marginTop: 28, gap: 18 },
 

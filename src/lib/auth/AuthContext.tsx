@@ -6,6 +6,7 @@ import {
     useContext,
     useEffect,
     useMemo,
+    useRef,
     useState,
 } from "react";
 import { supabaseAuthService } from "./supabaseAuthService";
@@ -14,13 +15,15 @@ import { AuthService, AuthUser, Session, SignUpInput, SocialProvider } from "./t
 const service: AuthService = supabaseAuthService;
 
 const EMAIL_KEY = "budget-last-email-v1";
+const GUEST_MODE_KEY = "budget-guest-mode-v1";
 
-type Status = "loading" | "signedOut" | "signedIn";
+type Status = "loading" | "signedOut" | "signedIn" | "guest";
 
 type AuthValue = {
   status: Status;
   user: AuthUser | null;
   rememberedEmail: string;
+  continueAsGuest: () => Promise<void>;
   /** Each of these throws an error with a code; show it with authErrorMessage(e). */
   signIn: (email: string, password: string, remember: boolean) => Promise<void>;
   signUp: (input: SignUpInput) => Promise<boolean>;
@@ -42,30 +45,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>("loading");
   const [session, setSession] = useState<Session | null>(null);
   const [rememberedEmail, setRememberedEmail] = useState("");
+  const guestMode = useRef(false);
 
   useEffect(() => {
     let active = true;
     let authEventReceived = false;
+    let authEventSession: Session | null = null;
+    let initialized = false;
+    const applySession = (nextSession: Session | null) => {
+      setSession(nextSession);
+      if (nextSession) {
+        guestMode.current = false;
+        setStatus("signedIn");
+        AsyncStorage.removeItem(GUEST_MODE_KEY).catch(() => {});
+      } else {
+        setStatus(guestMode.current ? "guest" : "signedOut");
+      }
+    };
     const unsubscribe = service.subscribeToAuthChanges((nextSession) => {
       authEventReceived = true;
+      authEventSession = nextSession;
       if (!active) return;
-      setSession(nextSession);
-      setStatus(nextSession ? "signedIn" : "signedOut");
+      if (!initialized && !nextSession) return;
+      applySession(nextSession);
     });
 
-    service
-      .getSession()
-      .then((restored) => {
-        if (active && !authEventReceived) {
-          setSession(restored);
-          setStatus(restored ? "signedIn" : "signedOut");
-        }
+    Promise.all([service.getSession(), AsyncStorage.getItem(GUEST_MODE_KEY)])
+      .then(([restored, guestChoice]) => {
+        if (!active) return;
+        guestMode.current = guestChoice === "true";
+        initialized = true;
+        applySession(authEventReceived ? authEventSession : restored);
       })
       .catch(() => {
-        if (active && !authEventReceived) {
+        if (active) {
+          initialized = true;
           console.warn("Unable to restore the Supabase session.");
-          setSession(null);
-          setStatus("signedOut");
+          if (!authEventReceived) guestMode.current = false;
+          applySession(authEventReceived ? authEventSession : null);
         }
       });
 
@@ -84,6 +101,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const finish = useCallback(async (s: Session, remember: boolean) => {
+    guestMode.current = false;
+    try {
+      await AsyncStorage.removeItem(GUEST_MODE_KEY);
+    } catch (error) {
+      console.warn("Unable to clear guest mode preference.", error);
+    }
     try {
       if (remember) {
         await AsyncStorage.setItem(EMAIL_KEY, s.user.email);
@@ -97,6 +120,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setSession(s);
     setStatus("signedIn");
+  }, []);
+
+  const continueAsGuest = useCallback(async () => {
+    guestMode.current = true;
+    try {
+      await AsyncStorage.setItem(GUEST_MODE_KEY, "true");
+    } catch (error) {
+      console.warn("Unable to save guest mode preference.", error);
+    }
+    setSession(null);
+    setStatus("guest");
   }, []);
 
   const signIn = useCallback(
@@ -140,16 +174,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
-    await service.signOut();
+    // Guest mode has no remote session to revoke.
+    if (session) await service.signOut();
+    guestMode.current = false;
+    await AsyncStorage.removeItem(GUEST_MODE_KEY).catch(() => {});
     setSession(null);
     setStatus("signedOut");
-  }, []);
+  }, [session]);
 
   const value = useMemo<AuthValue>(
     () => ({
       status,
       user: session?.user ?? null,
       rememberedEmail,
+      continueAsGuest,
       signIn,
       signUp,
       signInWithProvider,
@@ -161,6 +199,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       session,
       rememberedEmail,
+      continueAsGuest,
       signIn,
       signUp,
       signInWithProvider,

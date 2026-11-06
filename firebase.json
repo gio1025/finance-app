@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "site": "kuripot",
+    "site": "kuripot-finance",
     "public": "dist",
     "cleanUrls": true,
     "ignore": [

@@ -27,6 +27,24 @@ In the output, you'll find options to open the app in a
 
 You can start developing by editing the files inside the **src/app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
+## Browser end-to-end tests
+
+The Playwright tests cover guest entry, navigation, and the core transaction flow (add income and expense, search, filter, edit, and delete) on desktop and mobile Chromium. Install the browser once, then run:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+By default, Playwright starts the local Expo web app. To run the same tests against the deployed site in PowerShell:
+
+```powershell
+$env:PLAYWRIGHT_BASE_URL = "https://kuripot-finance.web.app"
+npm run test:e2e
+```
+
+TypeScript is the recommended language for these tests: it matches the app, catches selector/configuration mistakes early, and is supported directly by Playwright.
+
 ## Get a fresh project
 
 When you're ready, run:

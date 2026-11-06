@@ -60,6 +60,13 @@ function TabNavigator() {
             loadingTimer.current = null;
             pendingRoute.current = visitedRoutes.current.has(route.key) ? null : route.key;
             setLoadingTab(pendingRoute.current !== null);
+            if (pendingRoute.current) {
+              loadingTimer.current = setTimeout(() => {
+                pendingRoute.current = null;
+                loadingTimer.current = null;
+                setLoadingTab(false);
+              }, 1500);
+            }
           },
           focus: () => {
             visitedRoutes.current.add(route.key);
